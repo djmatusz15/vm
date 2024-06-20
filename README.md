@@ -1,5 +1,5 @@
-## Virtual Memory Manager
-# DJ Matusz
+# Virtual Memory Manager
+## DJ Matusz
 
 This is a virtual memory manager. It allocates a certain amount of memory, maps 
 a virtual memory address to these pages of physical memory, and can call them back
