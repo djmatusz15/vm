@@ -12,7 +12,7 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, PULONG_PTR virtual_memory_num
         return NULL;
     }
 
-    pgtb->pte_array = (PTE**)malloc(sizeof(PTE*) * nums_VAs);
+    pgtb->pte_array = (PTE*)malloc(sizeof(PTE) * nums_VAs);
     if (pgtb->pte_array == NULL) {
         printf("Couldn't malloc for PTE array in pagetable\n");
         free(pgtb);
@@ -21,24 +21,12 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, PULONG_PTR virtual_memory_num
 
     unsigned count = 0;
     while (count < nums_VAs) {
-        PTE* new_pte = (PTE*)malloc(sizeof(PTE));
-        if (new_pte == NULL) {
-            printf("Could not malloc for new PTE\n");
-
-            for (unsigned j = 0; j < count; j++) {
-                free(pgtb->pte_array[j]);
-            }
-
-            free(pgtb->pte_array);
-            free(pgtb);
-            return NULL;
-        }
+        PTE* new_pte = &pgtb->pte_array[count];
 
         new_pte->memory_format.frame_number = 0;
         new_pte->memory_format.valid = 0;
         new_pte->memory_format.age = 0;
 
-        pgtb->pte_array[count] = new_pte;
         count++;
     }
 
@@ -69,7 +57,7 @@ PTE* va_to_pte(PAGE_TABLE* pgtb, PULONG_PTR arbitrary_va) {
         return NULL;
     }
 
-    return pgtb->pte_array[conv_index];
+    return &pgtb->pte_array[conv_index];
 
 }
 
