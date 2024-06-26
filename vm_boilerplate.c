@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <windows.h>
-#include <list.h>
-#include <pagetable.h>
+#include "list.h"
+#include "pagetable.h"
 #pragma comment(lib, "advapi32.lib")
 
 #define PAGE_SIZE                   4096
@@ -345,8 +345,8 @@ full_virtual_memory_test (
     // Initialize freelist
     page_t* freelist = instantiateFreeList(physical_page_numbers, physical_page_count);
     page_t* standby_list = instantiateStandyList();
-    printf("Freelist head address: %p\n", freelist);
-    printf("Standby list head address: %p\n", standby_list);
+    // printf("\nFreelist head address: %p\n", freelist);
+    // printf("Standby list head address: %p\n", standby_list);
 
     virtual_address_size = 64 * physical_page_count * PAGE_SIZE;
 
@@ -365,13 +365,14 @@ full_virtual_memory_test (
                       PAGE_READWRITE);
 
     if (p == NULL) {
-        printf ("full_virtual_memory_test : could not reserve memory\n");
+        printf ("full_virtual_memory_test : could not reserve memory\n\n");
         return;
     }
 
     //
     // Now perform random accesses.
     //
+
 
     ULONG64 num_VAs = virtual_address_size / PAGE_SIZE;
     PAGE_TABLE* pgtb = instantiatePagetable(num_VAs, p);
@@ -383,9 +384,7 @@ full_virtual_memory_test (
     srand (time (NULL));
 
 
-    // DM: Count to 1 million then stop
-
-    for (i = 0; i < MB (1); i += 1) {
+    for (i = 0; i < MB (2); i += 1) {
 
         //
         // Randomly access different portions of the virtual address
@@ -438,13 +437,13 @@ full_virtual_memory_test (
             // STATE MACHINE !
             //
 
-
             PTE* curr_pte = va_to_pte(pgtb, arbitrary_va);
             if (curr_pte == NULL) {
                 printf("Could not get a valid PTE given VA\n");
                 return;
             }
 
+            //EnterCriticalSection(&pgtb->pte_lock);
 
             // DM: Here, would first check if page is on
             // standby or modified. If it is, can get it from there
@@ -454,25 +453,71 @@ full_virtual_memory_test (
 
             if (curr_pte->memory_format.frame_number != 0) {
                 if (curr_pte->memory_format.valid == 1) {
-                    printf("Already used by another thread, continue on\n");
+                    printf("Already active by another thread, continue on\n");
+                    //LeaveCriticalSection(&pgtb->pte_lock);
                     continue;
                 }
+
                 else if (curr_pte->disc_format.valid == 0 && curr_pte->disc_format.on_disc == 1) {
                     printf("Given page is on disc, go get it\n");
                     // Get the frame from standby, don't canabalize
+
+                    // Get pfn stored in this PTE
+                    ULONG64 pte_pfn = curr_pte->disc_format.disc_number;
+
+                    // start from first standby page (STILL O(N))
+                    //EnterCriticalSection(&standby_list->list_lock);
+
+                    page_t* curr_page = standby_list->flink;
+
+                    while (curr_page->pfn != pte_pfn) {
+                        if (curr_page == standby_list) {
+                            printf("Couldn't find PFN on standby list (ERROR)\n");
+
+                            //LeaveCriticalSection(&standby_list->list_lock);
+                            return;
+                        }
+                        curr_page = curr_page->flink;
+                    }
+
+                    // DM: Remove from standby list
+                    //EnterCriticalSection(&standby_list);
+                    //popFromAnywhere(standby_list, curr_page);
+                    //LeaveCriticalSection(&standby_list);
+
+
+                    // Got PFN from standby, return to active 
+                    curr_pte->memory_format.age = 0;
+                    curr_pte->memory_format.valid = 1;
+
+                    // Do we use &?
+                    curr_pte->memory_format.frame_number = pte_pfn;
+
+                    //LeaveCriticalSection(&standby_list->list_lock);
+
+                    // DM: Move page to freelist again
+                    //addToHead(freelist, curr_page);
+
                 }
+
                 else if (curr_pte->transition_format.valid == 0 && curr_pte->transition_format.on_disc == 0) {
                     printf("Given page is on modified list, try and get from list\n");
                     // Get the frame from modified list
                 }
             }
 
+            //EnterCriticalSection(&freelist->list_lock);
+
             page_t* popped_page = popTailPage(freelist);
-            printf("Popped page: %p\n", popped_page);
+            // printf("Popped page: %p\n", popped_page);
 
 
             if (popped_page == NULL) {
-                printf("Move to standby\n");
+
+                //LeaveCriticalSection(&freelist->list_lock);
+
+                // printf("Move to standby\n");
+
                 // DM: trim 1 page, if available
                 // Right now, just finds first ones that are active
 
@@ -483,36 +528,52 @@ full_virtual_memory_test (
                         break;
                     }
 
-                    // Do we add &?
-                    if (pgtb->pte_array[i]->memory_format.valid == 1) {
+                    PTE* new_pte = &pgtb->pte_array[i];
+                    if (new_pte->memory_format.valid == 1) {
                         // TRIM THIS ONE
-                        pgtb->pte_array[i]->memory_format.valid = 0;
-                        pgtb->pte_array[i]->memory_format.age = 0;
+                        new_pte->memory_format.valid = 0;
+                        new_pte->memory_format.age = 0;
 
-                        addToTail(standby_list, pgtb->pte_array[i]->memory_format.frame_number);
+                        addToTail(standby_list, new_pte->memory_format.frame_number);
 
                         // DM: Create pte_to_va
-                        PULONG_PTR conv_va = pte_to_va(pgtb, &pgtb->pte_array[i]);
+                        PULONG_PTR conv_va = pte_to_va(pgtb, new_pte);
 
                         if (MapUserPhysicalPages(conv_va, 1, NULL) == FALSE) {
                             printf("Could not unmap VA %p\n", conv_va);
                             return;
                         }
 
-                        pgtb->pte_array[i]->memory_format.frame_number = 0;
+                        // printf("Unmapped\n");
+
+                        new_pte->memory_format.frame_number = 0;
                         got = TRUE;
                     }
                     i++;
                 }
 
+                //EnterCriticalSection(&standby_list->list_lock);
+
                 popped_page = popTailPage(standby_list);
                 // printf("Standby popped page: %p\n", popped_page);
                 if (popped_page == NULL) {
                     printf("Also could not get from standby\n");
+
+                    //LeaveCriticalSection(&standby_list->list_lock);
                     return;
                 }
             }
 
+
+            // DM: Don't know what to do here, because I won't know if 
+            // I am holding a lock for the modified, standby or freelist.
+
+            #if 0
+
+            LeaveCriticalSection(&freelist->list_lock);
+            LeaveCriticalSection(&standby_list->list_lock);
+
+            #endif
 
             ULONG64 popped_pfn = popped_page->pfn;
 
@@ -528,7 +589,7 @@ full_virtual_memory_test (
 
             if (MapUserPhysicalPages (arbitrary_va, 1, &popped_pfn) == FALSE) {
 
-                printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", arbitrary_va, &popped_pfn);
+                printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", arbitrary_va, popped_pfn);
 
                 return;
             }
@@ -536,11 +597,13 @@ full_virtual_memory_test (
 
             *arbitrary_va = (ULONG_PTR) arbitrary_va;
 
+            //LeaveCriticalSection(&pgtb->pte_lock);
+
             // if (MapUserPhysicalPages(arbitrary_va, 1, &popped_pfn) == FALSE) {
             //     printf("full_virtual_m")
             // }
 
-            printf("mapped\n");
+            // printf("mapped\n");
 
             //
             // Unmap the virtual address translation we installed above
