@@ -38,7 +38,7 @@ typedef struct {
 } PTE;
 
 typedef struct {
-    PTE** pte_array;
+    PTE* pte_array;
     ULONG64 num_ptes;
     ULONG64 virtual_frame_num;
     CRITICAL_SECTION pte_lock;
