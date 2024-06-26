@@ -68,8 +68,11 @@ page_t* instantiateStandyList () {
 // CHANGED: listhead to page_t*
 page_t* popTailPage(page_t* listhead) {
 
+    //EnterCriticalSection(&listhead->list_lock);
+
     if (listhead->blink == listhead) {
-        printf("Empty - no pages (freelist)\n");
+        //printf("Empty - no pages (freelist)\n");
+        //LeaveCriticalSection(&listhead->list_lock);
         return NULL;
     }
 
@@ -79,20 +82,29 @@ page_t* popTailPage(page_t* listhead) {
     tail->blink->flink = listhead;
     listhead->blink = tail->blink;
 
+    //LeaveCriticalSection(&listhead->list_lock);
+
+    // DM: Couldn't another thread access address of tail 
+    // between 85 and return at 90? What to do?
+
     return tail;
 
 }
 
 void addToTail(page_t* listhead, ULONG64 given_pfn) {
 
+    //EnterCriticalSection(&listhead->list_lock);
+
     if (listhead == NULL) {
         printf("Given listhead is NULL (addToTail)\n");
+        //LeaveCriticalSection(&listhead->list_lock);
         return;
     }
 
     page_t* new_page = (page_t*)malloc(sizeof(page_t));
     if (new_page == NULL) {
         printf("Couldn't malloc for new page (addToTail)\n");
+        //LeaveCriticalSection(&listhead->list_lock);
         return;
     }
 
@@ -102,5 +114,7 @@ void addToTail(page_t* listhead, ULONG64 given_pfn) {
 
     listhead->blink->flink = new_page;
     listhead->blink = new_page;
+
+    //LeaveCriticalSection(&listhead->list_lock);
 
 }
