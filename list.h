@@ -8,6 +8,7 @@ typedef struct page {
     struct page* blink;
     struct page* flink;
     ULONG64 pfn;
+    CRITICAL_SECTION list_lock;
 } page_t;
 
 page_t* instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames);
