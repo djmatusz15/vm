@@ -5,7 +5,7 @@
 
 #include "pagetable.h"
 
-PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, PULONG_PTR virtual_memory_nums) {
+PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
     PAGE_TABLE* pgtb = (PAGE_TABLE*)malloc(sizeof(PAGE_TABLE));
     if (pgtb == NULL) {
         printf("Couldn't malloc for pagetable (instantiatePagetable)\n");
@@ -21,58 +21,53 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, PULONG_PTR virtual_memory_num
 
     unsigned count = 0;
     while (count < nums_VAs) {
-        PTE* new_pte = &pgtb->pte_array[count];
+        // PTE* new_pte = &pgtb->pte_array[count];
 
-        new_pte->memory_format.frame_number = 0;
-        new_pte->memory_format.valid = 0;
-        new_pte->memory_format.age = 0;
+        pgtb->pte_array[count].memory_format.frame_number = 0;
+        pgtb->pte_array[count].memory_format.age = 0;
+        pgtb->pte_array[count].memory_format.valid = 0;
 
         count++;
     }
 
     pgtb->num_ptes = nums_VAs;
-    pgtb->virtual_frame_num = (ULONG64)virtual_memory_nums;
 
-    // InitializeCriticalSection(&pgtb->pte_lock);
+    InitializeCriticalSection(&pgtb->pte_lock);
 
     return pgtb;
 }
 
 
-// Changed line 72 to &pgtb instead of pgtb
-PTE* va_to_pte(PAGE_TABLE* pgtb, PULONG_PTR arbitrary_va) {
-    if (pgtb == NULL) {
-        printf("Given invalid pagetable (va_to_pte)\n");
-        return NULL;
-    }
+PTE* va_to_pte(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb) {
 
     if (arbitrary_va == NULL) {
         printf("Given VA is NULL (va_to_pte)\n");
         return NULL;
     }
 
-    ULONG64 conv_index = CONV_INDEX_NUM((ULONG64)arbitrary_va - pgtb->virtual_frame_num);
+    
+    ULONG64 conv_index = CONV_INDEX_NUM((ULONG64)arbitrary_va - (ULONG64)p);
     if (conv_index > pgtb->num_ptes) {
         printf("Was unable to convert VA to valid PTE index\n");
         return NULL;
     }
 
     return &pgtb->pte_array[conv_index];
-
 }
 
-PULONG_PTR pte_to_va(PAGE_TABLE* pgtb, PTE* pte) {
-    if (pgtb == NULL || pte == NULL) {
+PULONG_PTR pte_to_va(PTE* pte, PAGE_TABLE* pgtb) {
+    if (pte == NULL) {
         printf("Given pagetable and/or PTE is NULL\n");
         return NULL;
     }
 
-    ULONG64 base_address_ptes = (ULONG64)pgtb->pte_array;
-    ULONG64 address_of_given_pte = (ULONG64)pte;
+    ULONG64 base_address_pte_list = (ULONG64) pgtb->pte_array;
+    ULONG64 pte_address = (ULONG64) pte;
 
-    ULONG64 given_pte_index = (address_of_given_pte - base_address_ptes) / sizeof(PTE);
-    PULONG_PTR pte_va = (PULONG_PTR)(pgtb->virtual_frame_num + (given_pte_index * PAGE_SIZE));
+    ULONG64 pte_index = (pte_address - base_address_pte_list) / sizeof(PTE);
 
-    return pte_va;
+    PULONG_PTR virtual_address = (PULONG_PTR) ((ULONG_PTR)p + (pte_index * PAGE_SIZE));
+
+    return virtual_address;
 
 }

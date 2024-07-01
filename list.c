@@ -1,68 +1,93 @@
 #define NUM_FREE_LISTS 16
+#define PAGE_SIZE 4096
 
 #include "list.h"
+#include "pagetable.h"
 
-page_t* instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames) {
-    page_t* first_page = (page_t*)malloc(sizeof(page_t));
-    if (first_page == NULL) {
-        printf("Couldn't malloc for first page\n");
+
+void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn) {
+    freelist.blink = &freelist;
+    freelist.flink = &freelist;
+
+    for (unsigned i = 0; i < num_physical_frames; i++) {
+        page_t* new_page = page_create(base_pfn, physical_frame_numbers[i]);
+        if (new_page == NULL) {
+            printf("Couldn't create new page\n");
+        }
+
+        addToHead(&freelist, new_page);
+    } 
+
+    page_t* free = &freelist;
+    InitializeCriticalSection(&free->list_lock);
+
+}
+
+page_t* page_create(page_t* base, ULONG_PTR page_num) {
+    page_t* new_page = base + page_num;
+    page_t* base_page = VirtualAlloc(new_page, sizeof(page_t), MEM_COMMIT, PAGE_READWRITE);
+    // fix this when fixing structure_padding, commit both halves (base_page and the next page)
+
+    C_ASSERT((PAGE_SIZE % sizeof(page_t)) == 0);
+    
+    if (base_page == NULL) {
+        printf("Could not create page\n");
         return NULL;
     }
 
-    first_page->blink = first_page;
-    first_page->flink = first_page;
-    first_page->pfn = 0;
-
-    unsigned count = 0;
-    page_t* prev_page = first_page;
-
-    while (count < num_physical_frames) {
-        page_t* new_page = (page_t*)malloc(sizeof(page_t));
-
-        if (new_page == NULL) {
-            printf("New frame could not be malloc'd (instantiateFreeList)\n");
-        }
-
-        // Set the new frame
-        new_page->pfn = physical_frame_numbers[count];
-        new_page->flink = first_page;
-        new_page->blink = prev_page;
-
-        // Fix prev_frame flink and first page's blink
-        prev_page->flink = new_page;
-        first_page->blink = new_page;
-
-        // Set new prev_frame and incr count
-        prev_page = new_page;
-        count++;
-    }
-
-    page_t* curr_page = first_page->flink;
-    unsigned count_test = 0;
-    while (curr_page != first_page) {
-        printf("curr_page address: %p -> count: %d\n", curr_page, count_test);
-        curr_page = curr_page->flink;
-        count_test++;
-    }
-
-    return first_page;
+    return new_page;
 }
 
 
 // Create standby list
-page_t* instantiateStandyList () {
-    page_t* first_page = (page_t*)malloc(sizeof(page_t));
-    if (first_page == NULL) {
-        printf("Couldn't malloc for head (standby list)\n");
-        return NULL;
+void instantiateStandyList () {
+    standby_list.blink = &standby_list;
+    standby_list.flink = &standby_list;
+
+    page_t* standby = &standby_list;
+    InitializeCriticalSection(&standby->list_lock);
+
+}
+
+
+HANDLE modified_list_notempty;
+HANDLE pagefile_blocks_available;
+LPVOID modified_page_va;
+LPVOID modified_page_va2;
+
+// Create modified list
+void instantiateModifiedList() {
+    modified_list.blink = &modified_list;
+    modified_list.flink = &modified_list;
+
+    modified_list_notempty = CreateEvent(NULL, FALSE, FALSE, NULL);
+    pagefile_blocks_available = CreateEvent(NULL, FALSE, FALSE, NULL);
+
+    // For writing from memory to disk
+    modified_page_va = VirtualAlloc(NULL,
+                      PAGE_SIZE,
+                      MEM_RESERVE | MEM_PHYSICAL,
+                      PAGE_READWRITE);
+
+    if (modified_page_va == NULL) {
+        printf ("full_virtual_memory_test : could not reserve memory for temp VA\n");
+        return;
     }
 
-    first_page->blink = first_page;
-    first_page->flink = first_page;
-    first_page->pfn = 0;
+    // DM: this is for writing from disk back to new page
+    modified_page_va2 = VirtualAlloc(NULL,
+                      PAGE_SIZE,
+                      MEM_RESERVE | MEM_PHYSICAL,
+                      PAGE_READWRITE);
 
-    return first_page;
+    if (modified_page_va2 == NULL) {
+        printf ("full_virtual_memory_test : could not reserve memory for temp2 VA\n");
+        return;
+    }
+
+    return;
 }
+
 
 // For removing page from freelist
 // CHANGED: listhead to page_t*
@@ -84,14 +109,50 @@ page_t* popTailPage(page_t* listhead) {
 
     //LeaveCriticalSection(&listhead->list_lock);
 
-    // DM: Couldn't another thread access address of tail 
-    // between 85 and return at 90? What to do?
-
     return tail;
 
 }
 
-void addToTail(page_t* listhead, ULONG64 given_pfn) {
+// From TS
+page_t* popHeadPage(page_t* listhead) {
+    if (listhead->flink == listhead) {
+        //printf("Nothing to pop, the list is empty\n");
+        return NULL;
+    }
+
+    // adjust links
+    page_t* popped_page = (page_t*) listhead->flink;
+    listhead->flink = listhead->flink->flink;
+    listhead->flink->blink = listhead;
+
+    return popped_page;
+}
+
+
+// HAVE TO DOUBLE CHECK THIS
+page_t* popFromAnywhere(page_t* listhead, page_t* given_page) {
+    page_t* returned_page;
+
+    // Checks to see if its the tail or first real page
+    if (listhead->blink == given_page) {
+        returned_page = popTailPage(listhead);
+    }
+    else if (listhead->flink == given_page) {
+        // DM: Check that this works! Haven't tested
+        returned_page = popHeadPage(listhead);
+    }
+    // If not first page or tail page, its somewhere in the middle
+    else {
+        page_t* prev_page = given_page->blink;
+        prev_page->flink = given_page->flink;
+        given_page->flink->blink = prev_page;
+    }
+
+    return returned_page;
+}
+
+// From TS
+void addToHead(page_t* listhead, page_t* new_page) {
 
     //EnterCriticalSection(&listhead->list_lock);
 
@@ -101,20 +162,32 @@ void addToTail(page_t* listhead, ULONG64 given_pfn) {
         return;
     }
 
-    page_t* new_page = (page_t*)malloc(sizeof(page_t));
-    if (new_page == NULL) {
-        printf("Couldn't malloc for new page (addToTail)\n");
-        //LeaveCriticalSection(&listhead->list_lock);
-        return;
-    }
+    new_page->flink = listhead->flink;
+    listhead->flink->blink = new_page;
+    listhead->flink = new_page;
+    new_page->blink = listhead;
 
-    new_page->blink = listhead->blink;
-    new_page->flink = listhead;
-    new_page->pfn = given_pfn;
-
-    listhead->blink->flink = new_page;
-    listhead->blink = new_page;
+    return;
 
     //LeaveCriticalSection(&listhead->list_lock);
 
+}
+
+
+page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb) {
+    if (pgtb == NULL || given_pfn == 0) {
+        printf("Given pagetable is NULL or pfn is 0 (pfn_to_page)\n");
+        return NULL;
+    }
+
+    return (page_t*)(base_pfn + given_pfn);
+}
+
+ULONG64 page_to_pfn(page_t* given_page) {
+    if (given_page == NULL) {
+        DebugBreak();
+        return 0;
+    }
+
+    return (ULONG64)(given_page - base_pfn);
 }
