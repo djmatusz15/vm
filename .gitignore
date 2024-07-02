@@ -1,0 +1,177 @@
+// ULONG64 conv_index = va_to_pte(arbitrary_va, pgtb);
+            // ULONG64 pte_region_index_for_lock = conv_index / 128;
+            // EnterCriticalSection(&pgtb->pte_regions_locks[pte_region_index_for_lock]);
+
+            // PTE* curr_pte = &pgtb->pte_array[conv_index];
+
+            // if (curr_pte == NULL) {
+            //     printf("Could not get a valid PTE given VA\n");
+            //     return;
+            // }
+
+            // page_t* curr_page;
+            // BOOL get_from_modified = FALSE;
+
+
+            // if (curr_pte->memory_format.frame_number != 0) {
+            //     if (curr_pte->memory_format.valid == 1) {
+            //         printf("Already active by another thread, continue on\n");
+            //         LeaveCriticalSection(&pgtb->pte_regions_locks[pte_region_index_for_lock]);
+            //         continue;
+            //     }
+
+            //     else if (curr_pte->transition_format.valid == 0 && curr_pte->transition_format.in_memory == 1) {
+            //         // printf("Given page is on modified or standby\n");
+            //         LeaveCriticalSection(&pgtb->pte_regions_locks[pte_region_index_for_lock]);
+            //         continue;
+            //         if (curr_pte->transition_format.is_modified == 1) {
+            //             get_from_modified = TRUE;
+            //         }
+            //     }
+
+            //     else if (curr_pte->disc_format.valid == 0 && curr_pte->disc_format.in_memory == 0) {
+            //         printf("Given page is on disc, go get it\n");
+            //         LeaveCriticalSection(&pgtb->pte_regions_locks[pte_region_index_for_lock]);
+            //         continue;
+
+            //         // Get the frame from disk,
+            //         // write to new frame and give back
+
+            //         // Get pfn stored in this PTE
+            //         ULONG64 pte_pfn = curr_pte->disc_format.disc_number;
+
+            //         //EnterCriticalSection(&standby_list->list_lock);
+
+            //         curr_page = pfn_to_page(pte_pfn, pgtb);
+
+
+            //         // DM: Remove from standby list
+            //         //EnterCriticalSection(&standby_list);
+            //         //popFromAnywhere(standby_list, curr_page);
+            //         //LeaveCriticalSection(&standby_list);
+
+
+            //         // Got PFN from standby, return to active 
+            //         curr_pte->memory_format.age = 0;
+            //         curr_pte->memory_format.valid = 1;
+
+            //         curr_pte->memory_format.frame_number = pte_pfn;
+
+            //         //LeaveCriticalSection(&standby_list->list_lock);
+
+            //         // DM: Move page to freelist again
+            //         //addToHead(freelist, curr_page);
+
+            //     }
+
+
+            //     // DM: Will have to hold on to these locks for a bit longer:
+            //     // see later leaving of freelist for reference
+            //     if (get_from_modified) {
+            //         ULONG64 pte_pfn = curr_pte->transition_format.frame_number;
+            //         EnterCriticalSection(&modified_list.list_lock);
+            //         curr_page = popFromAnywhere(&modified_list, pfn_to_page(pte_pfn, pgtb));
+            //         LeaveCriticalSection(&modified_list.list_lock);
+            //     }
+            //     else {
+            //         ULONG64 pte_pfn = curr_pte->transition_format.frame_number;
+            //         EnterCriticalSection(&standby_list.list_lock);
+            //         curr_page = popFromAnywhere(&standby_list, pfn_to_page(pte_pfn, pgtb));
+            //         LeaveCriticalSection(&standby_list.list_lock);
+            //     }
+            // }
+
+            // EnterCriticalSection(&freelist.list_lock);
+
+            // curr_page = popHeadPage(&freelist);
+
+
+            // if (curr_page == NULL) {
+            //     LeaveCriticalSection(&freelist.list_lock);
+
+            //     // DM: trim 1 page, if available
+            //     // Right now, just finds first ones that are active
+
+            //     // unsigned i = 0;
+            //     // BOOL got = FALSE;
+                
+            //     // // Was pgtb->num_ptes
+            //     // while (i < 128) {
+            //     //     if (got == TRUE) {
+            //     //         break;
+            //     //     }
+
+            //     //     EnterCriticalSection(&pgtb->pte_regions_locks[i]);
+
+
+            //     //     for (unsigned j = i * 128; j < (i+1) * 128; j++) {
+            //     //         PTE valid_pte_contents;
+            //     //         PTE transition_pte_contents;
+
+            //     //         PTE* new_pte = &pgtb->pte_array[j];
+            //     //         valid_pte_contents = *new_pte;
+            //     //         if (valid_pte_contents.memory_format.valid == 1) {
+            //     //             // TRIM THIS ONE
+            //     //             transition_pte_contents.entire_field = 0;
+
+            //     //             // Do i do this? If moving to standby, even though
+            //     //             // it should be on disk, still setting in memory to 1?
+            //     //             transition_pte_contents.transition_format.in_memory = 1;
+
+            //     //             transition_pte_contents.transition_format.frame_number =
+            //     //                 valid_pte_contents.memory_format.frame_number;
+
+            //     //             *new_pte = transition_pte_contents;
+
+            //     //             EnterCriticalSection(&standby_list.list_lock);
+            //     //             addToHead(&standby_list, pfn_to_page(transition_pte_contents.transition_format.frame_number, pgtb));
+            //     //             LeaveCriticalSection(&standby_list.list_lock);
+
+            //     //             PULONG_PTR conv_va = pte_to_va(new_pte, pgtb);
+
+            //     //             if (MapUserPhysicalPages(conv_va, 1, NULL) == FALSE) {
+            //     //                 printf("Could not unmap VA %p\n", conv_va);
+            //     //                 return;
+            //     //             }
+
+            //     //             got = TRUE;
+            //     //         }
+            //     //     }
+
+            //     //     LeaveCriticalSection(&pgtb->pte_regions_locks[i]);
+            //     //     i++;
+            //     // }
+
+            //     EnterCriticalSection(&standby_list.list_lock);
+
+            //     curr_page = popHeadPage(&standby_list);
+            //     if (curr_page == NULL) {
+            //         //printf("Also could not get from standby\n");
+            //         LeaveCriticalSection(&standby_list.list_lock);
+            //         continue;
+            //         //return;
+            //     }
+            //     LeaveCriticalSection(&standby_list.list_lock);
+            // }
+            // else {
+            //     LeaveCriticalSection(&freelist.list_lock);
+            // }
+            
+            // ULONG64 popped_pfn = page_to_pfn(curr_page);
+            // curr_page->pte = curr_pte;
+
+            // curr_pte->memory_format.age = 0;
+            // curr_pte->memory_format.valid = 1;
+            // curr_pte->memory_format.frame_number = popped_pfn;
+
+            // if (MapUserPhysicalPages (arbitrary_va, 1, &popped_pfn) == FALSE) {
+
+            //     DebugBreak();
+            //     printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", arbitrary_va, popped_pfn);
+
+            //     return;
+            // }
+
+            // *arbitrary_va = (ULONG_PTR) arbitrary_va;
+
+            // LeaveCriticalSection(&pgtb->pte_regions_locks[pte_region_index_for_lock]);

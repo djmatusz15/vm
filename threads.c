@@ -1,26 +1,34 @@
 #include "threads.h"
+#include "globals.h"
 
 
 // Handles trimming PTEs that are active, and moving them
 // to modified list. Switch the PTE as well.
-// DM: Handle this so that it moves to modified list, not standby!
 
-void handle_trimming(PAGE_TABLE* pgtb, page_t* modified_head) {
+// DM: make sure to enter and leave locks correctly
 
-    // We'll have it run constantly
+LPTHREAD_START_ROUTINE handle_trimming() {
+
+    ULONG64 ptes_per_region = pgtb->num_ptes / 128;
+
     while (1) {
-        ULONG64 count = 0;
-        PTE* curr_pte = &pgtb->pte_array[count];
+        WaitForSingleObject(trim_now, 0);
+        ULONG64 count;
+        ULONG64 region;
+        PTE* curr_pte;
 
-        while (count < pgtb->num_ptes) {
-            if (curr_pte->memory_format.valid != 1) {
-                count++;
+        for (unsigned i = 0; i < 128; i++) {
+            EnterCriticalSection(&pgtb->pte_regions_locks[i]);
+
+            for (unsigned j = i * ptes_per_region; j < ((i+1) * (ptes_per_region)); j++) {
+                if (pgtb->pte_array[j].memory_format.valid == 1) {
+                    count = j;
+                    region = i;
+                    break;
+                }
             }
-        }
 
-        if (count == pgtb->num_ptes) {
-            printf("Couldn't find active PTE to trim\n");
-            return;
+            LeaveCriticalSection(&pgtb->pte_regions_locks[i]);
         }
 
         curr_pte = &pgtb->pte_array[count];
@@ -30,14 +38,19 @@ void handle_trimming(PAGE_TABLE* pgtb, page_t* modified_head) {
         curr_pte->transition_format.in_memory = 1;
         curr_pte->transition_format.is_modified = 1;
 
-        addToHead(modified_head, pfn_to_page(curr_pte->transition_format.frame_number, pgtb));
+        EnterCriticalSection(&standby_list.list_lock);
+        addToHead(&standby_list, pfn_to_page(curr_pte->transition_format.frame_number, pgtb));
+        LeaveCriticalSection(&standby_list.list_lock);
 
         PULONG_PTR conv_va = pte_to_va(curr_pte, pgtb);
 
         if (MapUserPhysicalPages(conv_va, 1, NULL) == FALSE) {
             printf("Couldn't unmap VA %p (handle_trimming)\n", conv_va);
-            return;
+            return NULL;
         }
+
+        // Make sure to leave PTE lock when done
+        LeaveCriticalSection(&pgtb->pte_regions_locks[region]);
     }
 }
 
@@ -47,13 +60,13 @@ UCHAR pagefile_state[100];
 #define FREE 0
 #define IN_USE 1
 
-void handle_modifying(page_t* modified_head) {
+LPTHREAD_START_ROUTINE handle_modifying() {
 
     // This will also run constantly
     // DM: Are there cases where we may want to wait?
 
      while (1) {
-        page_t* curr_page = popTailPage(modified_head);
+        page_t* curr_page = popHeadPage(&modified_list);
         if (curr_page == NULL) {
             printf("Could not pop tail from modified list\n");
             WaitForSingleObject(modified_list_notempty, 0);
@@ -70,7 +83,7 @@ void handle_modifying(page_t* modified_head) {
 
         if (i == PAGEFILE_BLOCKS) {
             printf("All disk slots in use\n");
-            addToHead(modified_head, curr_page);
+            addToHead(&modified_list, curr_page);
             WaitForSingleObject(pagefile_blocks_available, 0);
             continue;
         }
@@ -106,23 +119,37 @@ void handle_modifying(page_t* modified_head) {
      }
 }
 
-// is this how you define it?
-HANDLE aging_event;
+LPTHREAD_START_ROUTINE handle_aging() {
+    ULONG64 ptes_per_region = pgtb->num_ptes / 128;
 
-void handle_aging(PAGE_TABLE* pgtb) {
     while (1) {
         WaitForSingleObject(aging_event, 0);
 
-        // EnterCriticalSection(&pgtb->pte_lock);
-        for (unsigned i = 0; i < pgtb->num_ptes; i++) {
-            PTE* curr_pte = &pgtb->pte_array[i];
-
-            if (curr_pte->memory_format.valid == 1) {
-                continue;
+        // REPLACE WITH GLOBAL NUM_PTE_REGIONS
+        // Will loop through every PTE, by their lock
+        // region, and increment the ones that are active
+        for (unsigned i = 0; i < 128; i++) {
+            EnterCriticalSection(&pgtb->pte_regions_locks[i]);
+            
+            for (unsigned j = i * ptes_per_region; j < ((i+1) * ptes_per_region); j++) {
+                if (pgtb->pte_array[j].memory_format.valid == 1) {
+                    if (pgtb->pte_array[j].memory_format.age < 8) {
+                        pgtb->pte_array[j].memory_format.age++;
+                    }
+                }
             }
 
-        }
-        // LeaveCriticalSection(&pgtb->pte_lock);
+            LeaveCriticalSection(&pgtb->pte_regions_locks[i]);
 
+        }
     }
+}
+
+
+// Creating the threads to use 
+VOID initialize_threads(VOID)
+{
+    HANDLE* threads = (HANDLE*) malloc(sizeof(HANDLE) * 1);
+    threads[0] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_aging, NULL, 0, NULL);
+    threads[1] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_trimming, NULL, 0, NULL);
 }

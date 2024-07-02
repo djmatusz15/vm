@@ -9,6 +9,7 @@
 typedef struct page {
     struct page* flink;
     struct page* blink;
+    ULONG64 num_of_pages;
     PTE* pte;
 
     CRITICAL_SECTION list_lock;

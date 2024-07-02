@@ -48,11 +48,12 @@ typedef struct {
     PTE* pte_array;
     ULONG64 num_ptes;
     CRITICAL_SECTION pte_lock;
+    CRITICAL_SECTION* pte_regions_locks;
 } PAGE_TABLE;
 
 
 PAGE_TABLE* instantiatePagetable(ULONG64 num_VAs, page_t* virtual_memory_nums);
-PTE* va_to_pte(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb);
+ULONG64 va_to_pte(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb);
 PULONG_PTR pte_to_va(PTE* pte, PAGE_TABLE* pgtb);
 
 

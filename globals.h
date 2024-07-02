@@ -16,6 +16,7 @@ extern UCHAR pagefile_state[PAGEFILE_BLOCKS];
 
 // Aging event
 extern HANDLE aging_event;
+extern HANDLE trim_now;
 
 // Temp VAs
 extern LPVOID modified_page_va;
@@ -24,3 +25,6 @@ extern LPVOID modified_page_va2;
 // Writing to disk variables
 extern HANDLE modified_list_notempty;
 extern HANDLE pagefile_blocks_available;
+
+// Pagetable
+extern PAGE_TABLE* pgtb;

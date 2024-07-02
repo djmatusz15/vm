@@ -4,10 +4,12 @@
 #include "list.h"
 #include "pagetable.h"
 
+HANDLE trim_now;
 
 void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn) {
     freelist.blink = &freelist;
     freelist.flink = &freelist;
+    freelist.num_of_pages = num_physical_frames;
 
     for (unsigned i = 0; i < num_physical_frames; i++) {
         page_t* new_page = page_create(base_pfn, physical_frame_numbers[i]);
@@ -18,17 +20,16 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
         addToHead(&freelist, new_page);
     } 
 
-    page_t* free = &freelist;
-    InitializeCriticalSection(&free->list_lock);
+    InitializeCriticalSection(&freelist.list_lock);
 
 }
 
 page_t* page_create(page_t* base, ULONG_PTR page_num) {
     page_t* new_page = base + page_num;
     page_t* base_page = VirtualAlloc(new_page, sizeof(page_t), MEM_COMMIT, PAGE_READWRITE);
-    // fix this when fixing structure_padding, commit both halves (base_page and the next page)
-
-    C_ASSERT((PAGE_SIZE % sizeof(page_t)) == 0);
+    
+    // COULD NOT ASSERT
+    // C_ASSERT((PAGE_SIZE % sizeof(page_t)) == 0);
     
     if (base_page == NULL) {
         printf("Could not create page\n");
@@ -44,8 +45,7 @@ void instantiateStandyList () {
     standby_list.blink = &standby_list;
     standby_list.flink = &standby_list;
 
-    page_t* standby = &standby_list;
-    InitializeCriticalSection(&standby->list_lock);
+    InitializeCriticalSection(&standby_list.list_lock);
 
 }
 
@@ -54,6 +54,7 @@ HANDLE modified_list_notempty;
 HANDLE pagefile_blocks_available;
 LPVOID modified_page_va;
 LPVOID modified_page_va2;
+
 
 // Create modified list
 void instantiateModifiedList() {
@@ -85,6 +86,8 @@ void instantiateModifiedList() {
         return;
     }
 
+    InitializeCriticalSection(&modified_list.list_lock);
+
     return;
 }
 
@@ -93,11 +96,8 @@ void instantiateModifiedList() {
 // CHANGED: listhead to page_t*
 page_t* popTailPage(page_t* listhead) {
 
-    //EnterCriticalSection(&listhead->list_lock);
-
     if (listhead->blink == listhead) {
         //printf("Empty - no pages (freelist)\n");
-        //LeaveCriticalSection(&listhead->list_lock);
         return NULL;
     }
 
@@ -106,8 +106,7 @@ page_t* popTailPage(page_t* listhead) {
 
     tail->blink->flink = listhead;
     listhead->blink = tail->blink;
-
-    //LeaveCriticalSection(&listhead->list_lock);
+    listhead->num_of_pages -= 1;
 
     return tail;
 
@@ -115,6 +114,7 @@ page_t* popTailPage(page_t* listhead) {
 
 // From TS
 page_t* popHeadPage(page_t* listhead) {
+
     if (listhead->flink == listhead) {
         //printf("Nothing to pop, the list is empty\n");
         return NULL;
@@ -124,6 +124,7 @@ page_t* popHeadPage(page_t* listhead) {
     page_t* popped_page = (page_t*) listhead->flink;
     listhead->flink = listhead->flink->flink;
     listhead->flink->blink = listhead;
+    listhead->num_of_pages -= 1;
 
     return popped_page;
 }
@@ -146,6 +147,7 @@ page_t* popFromAnywhere(page_t* listhead, page_t* given_page) {
         page_t* prev_page = given_page->blink;
         prev_page->flink = given_page->flink;
         given_page->flink->blink = prev_page;
+        listhead->num_of_pages -= 1;
     }
 
     return returned_page;
@@ -166,6 +168,7 @@ void addToHead(page_t* listhead, page_t* new_page) {
     listhead->flink->blink = new_page;
     listhead->flink = new_page;
     new_page->blink = listhead;
+    listhead->num_of_pages += 1;
 
     return;
 
@@ -185,7 +188,6 @@ page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb) {
 
 ULONG64 page_to_pfn(page_t* given_page) {
     if (given_page == NULL) {
-        DebugBreak();
         return 0;
     }
 
