@@ -1,7 +1,7 @@
 #define PAGE_EXP_KB                  12 
 #define PAGE_SIZE                   (1 << PAGE_EXP_KB)
 #define CONV_INDEX_ADDR(x) (x & ~(PAGE_SIZE - 1))
-#define CONV_INDEX_NUM(x) (x >> PAGE_EXP_KB)
+#define CONV_INDEX_NUM(x) ((x) >> PAGE_EXP_KB)
 
 #define NUM_PTE_REGIONS 128
 #define MAX_AGE 8
@@ -25,8 +25,8 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
 
     unsigned count = 0;
     while (count < nums_VAs) {
-        // PTE* new_pte = &pgtb->pte_array[count];
 
+        pgtb->pte_array[count].entire_format = 0;
         pgtb->pte_array[count].memory_format.frame_number = 0;
         pgtb->pte_array[count].memory_format.age = 0;
         pgtb->pte_array[count].memory_format.valid = 0;
@@ -36,22 +36,21 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
 
     pgtb->num_ptes = nums_VAs;
 
-    // InitializeCriticalSection(&pgtb->pte_lock);
-
     // DM: Creating PTE regions with locks
     // Create a lock for each of the 100 sections,
     // then when you access a VA in the page fault, 
     // find its index and modulo it with num of PTE
     // regions to lock that region
 
-    CRITICAL_SECTION* locks = (CRITICAL_SECTION*)malloc(sizeof(CRITICAL_SECTION) * NUM_PTE_REGIONS);
+    PTE_LOCK* locks = (PTE_LOCK*)malloc(sizeof(PTE_LOCK) * NUM_PTE_REGIONS);
     if (locks == NULL) {
         printf("Couldn't malloc for locks\n");
         return NULL;
     }
 
     for (unsigned i = 0; i < NUM_PTE_REGIONS; i++) {
-        InitializeCriticalSection(&locks[i]);
+        InitializeCriticalSection(&locks[i].lock);
+        locks[i].owning_thread = 0;
     }
 
     pgtb->pte_regions_locks = locks;
@@ -60,10 +59,11 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
 }
 
 
-ULONG64 va_to_pte(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb) {
+ULONG64 va_to_pte_index(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb) {
 
     if (arbitrary_va == NULL) {
-        printf("Given VA is NULL (va_to_pte)\n");
+        DebugBreak();
+        printf("Given VA is NULL (va_to_pte_index)\n");
         return -1;
     }
 

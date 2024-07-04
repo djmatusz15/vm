@@ -21,6 +21,8 @@ typedef struct {
 typedef struct {
     // Always zero
     ULONG64 valid: 1;
+
+    // Can never be zero! 
     ULONG64 disc_number: 40;
     // Always zero
     ULONG64 in_memory: 1;
@@ -32,7 +34,7 @@ typedef struct {
     ULONG64 frame_number: 40;
     // Always one
     ULONG64 in_memory: 1;
-    ULONG64 is_modified: 1;
+    //ULONG64 is_modified: 1;
 } TRANSITION_PTE;
 
 typedef struct {
@@ -40,20 +42,24 @@ typedef struct {
         VALID_PTE memory_format;
         INVALID_PTE disc_format;
         TRANSITION_PTE transition_format;
-        ULONG64 entire_field;
+        ULONG64 entire_format;
     };
 } PTE;
 
 typedef struct {
+    CRITICAL_SECTION lock;
+    DWORD owning_thread;
+} PTE_LOCK;
+
+typedef struct {
     PTE* pte_array;
     ULONG64 num_ptes;
-    CRITICAL_SECTION pte_lock;
-    CRITICAL_SECTION* pte_regions_locks;
+    PTE_LOCK* pte_regions_locks;
 } PAGE_TABLE;
 
 
 PAGE_TABLE* instantiatePagetable(ULONG64 num_VAs, page_t* virtual_memory_nums);
-ULONG64 va_to_pte(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb);
+ULONG64 va_to_pte_index(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb);
 PULONG_PTR pte_to_va(PTE* pte, PAGE_TABLE* pgtb);
 
 

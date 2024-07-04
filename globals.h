@@ -2,6 +2,7 @@
 
 #define PAGE_SIZE 4096
 #define PAGEFILE_BLOCKS 100
+#define NUM_PTE_REGIONS 128
 
 extern page_t* base_pfn;
 

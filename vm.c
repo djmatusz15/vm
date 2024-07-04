@@ -288,7 +288,6 @@ full_virtual_memory_test (
     )
 {
     unsigned i;
-    // PULONG_PTR p;
     PULONG_PTR arbitrary_va;
     unsigned random_number;
     BOOL allocated;
@@ -392,7 +391,6 @@ full_virtual_memory_test (
         return;
     }
 
-    // DM: Switch standby, physical_page_numbers and pgtb to global
     ULONG64 num_VAs = virtual_address_size / PAGE_SIZE;
     pgtb = instantiatePagetable(num_VAs, base_pfn);
     if (pgtb == NULL) {
@@ -407,6 +405,8 @@ full_virtual_memory_test (
 
     srand (time (NULL));
 
+    arbitrary_va = NULL;
+
     for (i = 0; i < MB (1); i += 1) {
 
 
@@ -419,27 +419,30 @@ full_virtual_memory_test (
             SetEvent(aging_event);
         }
 
-        if (freelist.num_of_pages <= (pgtb->num_ptes / 5)) {
+        if ((freelist.num_of_pages + standby_list.num_of_pages) <= (2 * (pgtb->num_ptes) / 7)) {
             SetEvent(trim_now);
         }
 
-        random_number = rand () * rand () * rand ();
-
-        random_number %= virtual_address_size_in_unsigned_chunks;
-
-        //
-        // Write the virtual address into each page.  If we need to
-        // debug anything, we'll be able to see these in the pages.
-        //
 
         page_faulted = FALSE;
 
-        random_number = random_number &~ 7;
-        arbitrary_va = (PULONG_PTR)((ULONG_PTR)p + random_number);
+
+        if (arbitrary_va == NULL) {
+
+            random_number = rand () * rand () * rand ();
+
+            random_number %= virtual_address_size_in_unsigned_chunks;
+
+            random_number = random_number &~ 7;
+            arbitrary_va = (PULONG_PTR)((ULONG_PTR)p + random_number);
+
+        }
 
         __try {
 
             *arbitrary_va = (ULONG_PTR) arbitrary_va;
+
+            arbitrary_va = NULL;
 
         } __except (EXCEPTION_EXECUTE_HANDLER) {
 
@@ -453,8 +456,10 @@ full_virtual_memory_test (
             BOOL pagefault_success = pagefault(arbitrary_va);
             if (pagefault_success == FALSE) {
                 printf("Failed pagefault\n");
-                return;
             }
+
+            i -=1 ;
+            continue;
 
         }
     }

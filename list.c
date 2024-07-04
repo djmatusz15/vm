@@ -9,7 +9,7 @@ HANDLE trim_now;
 void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn) {
     freelist.blink = &freelist;
     freelist.flink = &freelist;
-    freelist.num_of_pages = num_physical_frames;
+    //freelist.num_of_pages = num_physical_frames;
 
     for (unsigned i = 0; i < num_physical_frames; i++) {
         page_t* new_page = page_create(base_pfn, physical_frame_numbers[i]);
@@ -57,6 +57,8 @@ LPVOID modified_page_va2;
 
 
 // Create modified list
+// DM: Ask if virtualAlloc of the 
+// temp VAs here is screwing something up?
 void instantiateModifiedList() {
     modified_list.blink = &modified_list;
     modified_list.flink = &modified_list;
@@ -130,17 +132,16 @@ page_t* popHeadPage(page_t* listhead) {
 }
 
 
-// HAVE TO DOUBLE CHECK THIS
 page_t* popFromAnywhere(page_t* listhead, page_t* given_page) {
-    page_t* returned_page;
+    //page_t* returned_page;
 
-    // Checks to see if its the tail or first real page
+    //Checks to see if its the tail or first real page
     if (listhead->blink == given_page) {
-        returned_page = popTailPage(listhead);
+        given_page = popTailPage(listhead);
     }
     else if (listhead->flink == given_page) {
         // DM: Check that this works! Haven't tested
-        returned_page = popHeadPage(listhead);
+        given_page = popHeadPage(listhead);
     }
     // If not first page or tail page, its somewhere in the middle
     else {
@@ -150,7 +151,7 @@ page_t* popFromAnywhere(page_t* listhead, page_t* given_page) {
         listhead->num_of_pages -= 1;
     }
 
-    return returned_page;
+    return given_page;
 }
 
 // From TS
@@ -179,6 +180,7 @@ void addToHead(page_t* listhead, page_t* new_page) {
 
 page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb) {
     if (pgtb == NULL || given_pfn == 0) {
+        DebugBreak();
         printf("Given pagetable is NULL or pfn is 0 (pfn_to_page)\n");
         return NULL;
     }
@@ -188,6 +190,7 @@ page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb) {
 
 ULONG64 page_to_pfn(page_t* given_page) {
     if (given_page == NULL) {
+        DebugBreak();
         return 0;
     }
 

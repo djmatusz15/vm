@@ -9,48 +9,106 @@
 
 LPTHREAD_START_ROUTINE handle_trimming() {
 
-    ULONG64 ptes_per_region = pgtb->num_ptes / 128;
+    ULONG64 ptes_per_region = pgtb->num_ptes / NUM_PTE_REGIONS;
 
     while (1) {
         WaitForSingleObject(trim_now, 0);
         ULONG64 count;
         ULONG64 region;
         PTE* curr_pte;
+        BOOL trimmed_enough = FALSE;
+        unsigned trimmed_pages_count = 0;
+        unsigned i;
 
-        for (unsigned i = 0; i < 128; i++) {
-            EnterCriticalSection(&pgtb->pte_regions_locks[i]);
+        for (i = 0; i < NUM_PTE_REGIONS; i++) {
+            
+            if (trimmed_enough == TRUE) {
+                break;
+            }
+
+            //EnterCriticalSection(&pgtb->pte_regions_locks[i]);
+            LockPagetable(i);
 
             for (unsigned j = i * ptes_per_region; j < ((i+1) * (ptes_per_region)); j++) {
+
                 if (pgtb->pte_array[j].memory_format.valid == 1) {
                     count = j;
                     region = i;
+
+                    curr_pte = &pgtb->pte_array[count];
+
+                    if (curr_pte->transition_format.frame_number == 0) {
+                        DebugBreak();
+                    }
+
+                    PTE local_contents;
+                    local_contents = *curr_pte;
+                    local_contents.transition_format.valid = 0;
+                    local_contents.transition_format.in_memory = 1;
+
+                    WriteToPTE(curr_pte, local_contents);
+
+                    // Found PTE to trim
+                    //curr_pte->transition_format.valid = 0;
+                    //curr_pte->transition_format.in_memory = 1;
+
+                    // Switch is_modified to 1 once you implement modifying thread
+
+                    if (curr_pte->transition_format.frame_number == 0) {
+                        DebugBreak();
+                    }
+
+                    PULONG_PTR conv_va = pte_to_va(curr_pte, pgtb);
+
+                    if (curr_pte->transition_format.frame_number == 0) {
+                        DebugBreak();
+                    }
+
+
+                    if (MapUserPhysicalPages(conv_va, 1, NULL) == FALSE) {
+                        DebugBreak();
+                        printf("Couldn't unmap VA %p (handle_trimming)\n", conv_va);
+                        return NULL;
+                    }
+
+                    if (curr_pte->transition_format.frame_number == 0) {
+                        DebugBreak();
+                    }
+
+                    // Was originally above the Mapping. If this was the
+                    // case, we would have left the standby lock, and someone
+                    // else could have swept in and took it before we unmapped it
+                    EnterCriticalSection(&standby_list.list_lock);
+
+                    if (curr_pte->transition_format.frame_number == 0) {
+                        DebugBreak();
+                    }
+
+                    addToHead(&standby_list, pfn_to_page(curr_pte->transition_format.frame_number, pgtb));
+
+                    LeaveCriticalSection(&standby_list.list_lock);
+
+                    #if 0
+                    if ((freelist.num_of_pages + standby_list.num_of_pages) >= (2 * (pgtb->num_ptes)) / 7) {
+                        trimmed_enough = TRUE;
+                        break;
+                    }
+
+                    trimmed_pages_count++;
+                    #endif
+                    trimmed_enough = TRUE;
                     break;
                 }
             }
-
-            LeaveCriticalSection(&pgtb->pte_regions_locks[i]);
+            // Make sure to leave PTE region lock
+            //LeaveCriticalSection(&pgtb->pte_regions_locks[i]);
+            UnlockPagetable(i);
         }
 
-        curr_pte = &pgtb->pte_array[count];
-
-        // Found PTE to trim
-        curr_pte->transition_format.valid = 0;
-        curr_pte->transition_format.in_memory = 1;
-        curr_pte->transition_format.is_modified = 1;
-
-        EnterCriticalSection(&standby_list.list_lock);
-        addToHead(&standby_list, pfn_to_page(curr_pte->transition_format.frame_number, pgtb));
-        LeaveCriticalSection(&standby_list.list_lock);
-
-        PULONG_PTR conv_va = pte_to_va(curr_pte, pgtb);
-
-        if (MapUserPhysicalPages(conv_va, 1, NULL) == FALSE) {
-            printf("Couldn't unmap VA %p (handle_trimming)\n", conv_va);
-            return NULL;
+        if (i == NUM_PTE_REGIONS) {
+            // printf("Didn't fill enough: %d\n", trimmed_pages_count);
+            continue;
         }
-
-        // Make sure to leave PTE lock when done
-        LeaveCriticalSection(&pgtb->pte_regions_locks[region]);
     }
 }
 
@@ -73,8 +131,11 @@ LPTHREAD_START_ROUTINE handle_modifying() {
             continue;
         }
 
+        // Leave out first disk space so that 
+        // there are no collisions with frame numbers
+        // in valid or transition PTEs; no ambiguity
         unsigned i;
-        for (i = 0 ; i < PAGEFILE_BLOCKS; i++) {
+        for (i = 1 ; i < PAGEFILE_BLOCKS; i++) {
             if (pagefile_state[i] == FREE) {
                 pagefile_state[i] = IN_USE;
                 break;
@@ -113,33 +174,43 @@ LPTHREAD_START_ROUTINE handle_modifying() {
 
         addToHead(&standby_list, curr_page);
 
-        curr_page->pte->disc_format.disc_number = i;
-        curr_page->pte->disc_format.valid = 0;
-        curr_page->pte->disc_format.in_memory = 0;
+        // curr_page->pte->disc_format.disc_number = i;
+        // curr_page->pte->disc_format.valid = 0;
+        // curr_page->pte->disc_format.in_memory = 0;
      }
 }
 
 LPTHREAD_START_ROUTINE handle_aging() {
-    ULONG64 ptes_per_region = pgtb->num_ptes / 128;
+    ULONG64 ptes_per_region = pgtb->num_ptes / NUM_PTE_REGIONS;
 
     while (1) {
         WaitForSingleObject(aging_event, 0);
 
-        // REPLACE WITH GLOBAL NUM_PTE_REGIONS
         // Will loop through every PTE, by their lock
         // region, and increment the ones that are active
-        for (unsigned i = 0; i < 128; i++) {
-            EnterCriticalSection(&pgtb->pte_regions_locks[i]);
+
+        for (unsigned i = 0; i < NUM_PTE_REGIONS; i++) {
+            //EnterCriticalSection(&pgtb->pte_regions_locks[i]);
+            LockPagetable(i);
             
             for (unsigned j = i * ptes_per_region; j < ((i+1) * ptes_per_region); j++) {
                 if (pgtb->pte_array[j].memory_format.valid == 1) {
                     if (pgtb->pte_array[j].memory_format.age < 8) {
-                        pgtb->pte_array[j].memory_format.age++;
+
+                        PTE local_contents;
+                        PTE* curr_pte = &pgtb->pte_array[j];
+                        
+                        local_contents = pgtb->pte_array[j];
+                        local_contents.memory_format.age++;
+                        WriteToPTE(curr_pte, local_contents);
+
+                        //pgtb->pte_array[j].memory_format.age++;
                     }
                 }
             }
 
-            LeaveCriticalSection(&pgtb->pte_regions_locks[i]);
+            //LeaveCriticalSection(&pgtb->pte_regions_locks[i]);
+            UnlockPagetable(i);
 
         }
     }
@@ -152,4 +223,54 @@ VOID initialize_threads(VOID)
     HANDLE* threads = (HANDLE*) malloc(sizeof(HANDLE) * 1);
     threads[0] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_aging, NULL, 0, NULL);
     threads[1] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_trimming, NULL, 0, NULL);
+}
+
+
+
+
+VOID LockPagetable(unsigned i) {
+    if (i >= NUM_PTE_REGIONS) {
+        printf("Outside PTE Region\n");
+        DebugBreak();
+    }
+
+    EnterCriticalSection(&pgtb->pte_regions_locks[i].lock);
+    DWORD curr_thread = GetCurrentThreadId();
+
+    if (pgtb->pte_regions_locks[i].owning_thread != 0) {
+        DebugBreak();
+    }
+
+    pgtb->pte_regions_locks[i].owning_thread = curr_thread;
+}
+
+VOID UnlockPagetable(unsigned i) {
+    if (i >= NUM_PTE_REGIONS) {
+        printf("Outside PTE Region\n");
+        DebugBreak();
+    }
+
+    DWORD curr_thread = GetCurrentThreadId();
+
+    if (pgtb->pte_regions_locks[i].owning_thread != curr_thread) {
+        DebugBreak();
+    }
+
+    pgtb->pte_regions_locks[i].owning_thread = 0;
+    LeaveCriticalSection(&pgtb->pte_regions_locks[i].lock);
+}
+
+
+VOID WriteToPTE(PTE* pte, PTE pte_contents) {
+    DWORD curr_thread = GetCurrentThreadId();
+
+    PULONG_PTR conv_va = pte_to_va(pte, pgtb);
+    ULONG64 conv_index = va_to_pte_index(conv_va, pgtb);
+    ULONG64 pte_region_index_for_lock = conv_index / 32;
+
+    if (pgtb->pte_regions_locks[pte_region_index_for_lock].owning_thread != curr_thread) {
+        DebugBreak();
+    }
+
+    *pte = pte_contents;
 }
