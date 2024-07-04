@@ -54,15 +54,7 @@ LPTHREAD_START_ROUTINE handle_trimming() {
 
                     // Switch is_modified to 1 once you implement modifying thread
 
-                    if (curr_pte->transition_format.frame_number == 0) {
-                        DebugBreak();
-                    }
-
                     PULONG_PTR conv_va = pte_to_va(curr_pte, pgtb);
-
-                    if (curr_pte->transition_format.frame_number == 0) {
-                        DebugBreak();
-                    }
 
 
                     if (MapUserPhysicalPages(conv_va, 1, NULL) == FALSE) {
@@ -71,37 +63,27 @@ LPTHREAD_START_ROUTINE handle_trimming() {
                         return NULL;
                     }
 
-                    if (curr_pte->transition_format.frame_number == 0) {
-                        DebugBreak();
-                    }
 
                     // Was originally above the Mapping. If this was the
                     // case, we would have left the standby lock, and someone
                     // else could have swept in and took it before we unmapped it
                     EnterCriticalSection(&standby_list.list_lock);
 
-                    if (curr_pte->transition_format.frame_number == 0) {
-                        DebugBreak();
-                    }
-
                     addToHead(&standby_list, pfn_to_page(curr_pte->transition_format.frame_number, pgtb));
 
                     LeaveCriticalSection(&standby_list.list_lock);
 
-                    #if 0
+                    
                     if ((freelist.num_of_pages + standby_list.num_of_pages) >= (2 * (pgtb->num_ptes)) / 7) {
                         trimmed_enough = TRUE;
                         break;
                     }
 
                     trimmed_pages_count++;
-                    #endif
-                    trimmed_enough = TRUE;
+                    
                     break;
                 }
             }
-            // Make sure to leave PTE region lock
-            //LeaveCriticalSection(&pgtb->pte_regions_locks[i]);
             UnlockPagetable(i);
         }
 
@@ -266,7 +248,7 @@ VOID WriteToPTE(PTE* pte, PTE pte_contents) {
 
     PULONG_PTR conv_va = pte_to_va(pte, pgtb);
     ULONG64 conv_index = va_to_pte_index(conv_va, pgtb);
-    ULONG64 pte_region_index_for_lock = conv_index / 32;
+    ULONG64 pte_region_index_for_lock = conv_index / PTES_PER_REGION;
 
     if (pgtb->pte_regions_locks[pte_region_index_for_lock].owning_thread != curr_thread) {
         DebugBreak();

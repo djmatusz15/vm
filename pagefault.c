@@ -1,20 +1,15 @@
 #include "pagefault.h"
 
 BOOL pagefault(PULONG_PTR arbitrary_va) {
-    // DM: Could the converted index be changed
-    // before we enter the lock
 
     ULONG64 conv_index = va_to_pte_index(arbitrary_va, pgtb);
-    ULONG64 pte_region_index_for_lock = conv_index / 32;
+    ULONG64 pte_region_index_for_lock = conv_index / PTES_PER_REGION;
     PTE_LOCK* pte_lock;
     ULONG64 pte_pfn;
     ULONG64 popped_pfn;
     page_t* curr_page;
     BOOL get_from_modified = FALSE;
 
-    //pte_lock = &pgtb->pte_regions_locks[pte_region_index_for_lock];
-    
-    //EnterCriticalSection(pte_lock);
     LockPagetable(pte_region_index_for_lock);
 
     PTE* curr_pte = &pgtb->pte_array[conv_index];
@@ -32,7 +27,6 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
         if (curr_pte->memory_format.valid == 1) {
             DebugBreak();
             printf("Already active by another thread, continue on\n");
-            //LeaveCriticalSection(pte_lock);
             UnlockPagetable(pte_region_index_for_lock);
             return TRUE;
         }
@@ -48,7 +42,6 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
         else if (curr_pte->disc_format.valid == 0 && curr_pte->disc_format.in_memory == 0) {
             DebugBreak();
             printf("Given page is on disc, go get it\n");
-            //LeaveCriticalSection(pte_lock);
             UnlockPagetable(pte_region_index_for_lock);
             return TRUE;
 
@@ -62,7 +55,6 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
         if (get_from_modified) {
             DebugBreak();
             LeaveCriticalSection(&modified_list.list_lock);
-            //LeaveCriticalSection(pte_lock);
             UnlockPagetable(pte_region_index_for_lock);
             return TRUE;
 
@@ -74,11 +66,9 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
 
 
             LeaveCriticalSection(&modified_list.list_lock);
-            //LeaveCriticalSection(pte_lock);
             UnlockPagetable(pte_region_index_for_lock);
             return TRUE;
         }
-
 
 
         
@@ -123,10 +113,6 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
             WriteToPTE(curr_pte, local_contents);
 
             curr_page->pte = curr_pte;
-
-            if (curr_pte->memory_format.frame_number == 0) {
-                DebugBreak();
-            }
 
 
             *arbitrary_va = (ULONG_PTR) arbitrary_va;
@@ -173,14 +159,6 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
             // DM: When multiple faulting threads running,
             // must lock the PTE region to curr_page as well
 
-            // Getting breaks here as well!!
-            if (old_pte->memory_format.valid) {
-                DebugBreak();
-            }
-
-            if (old_pte->transition_format.frame_number != page_to_pfn(curr_page)) {
-                DebugBreak();
-            }
 
             // DM: When we get to this point, we have the curr
             // page, but we do not have the PTE lock for it. So,
