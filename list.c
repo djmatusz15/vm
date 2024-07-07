@@ -40,10 +40,15 @@ page_t* page_create(page_t* base, ULONG_PTR page_num) {
 }
 
 
+HANDLE pages_available;
+
 // Create standby list
 void instantiateStandyList () {
     standby_list.blink = &standby_list;
     standby_list.flink = &standby_list;
+    standby_list.num_of_pages = 0;
+
+    pages_available = CreateEvent(NULL, FALSE, FALSE, NULL);
 
     InitializeCriticalSection(&standby_list.list_lock);
 
@@ -54,6 +59,8 @@ HANDLE modified_list_notempty;
 HANDLE pagefile_blocks_available;
 LPVOID modified_page_va;
 LPVOID modified_page_va2;
+PUCHAR pagefile_state;
+PUCHAR pagefile_contents;
 
 
 // Create modified list
@@ -86,6 +93,17 @@ void instantiateModifiedList() {
     if (modified_page_va2 == NULL) {
         printf ("full_virtual_memory_test : could not reserve memory for temp2 VA\n");
         return;
+    }
+
+    pagefile_state = malloc(sizeof(UCHAR) * num_pagefile_blocks);
+    pagefile_contents = malloc(PAGE_SIZE * num_pagefile_blocks);
+
+    for (unsigned i = 0; i < num_pagefile_blocks; i++) {
+        pagefile_state[i] = 0;
+    }
+
+    for (unsigned i = 0; i < num_pagefile_blocks * PAGE_SIZE; i++) {
+        pagefile_contents[i] = '\0';
     }
 
     InitializeCriticalSection(&modified_list.list_lock);
@@ -128,12 +146,33 @@ page_t* popHeadPage(page_t* listhead) {
     listhead->flink->blink = listhead;
     listhead->num_of_pages -= 1;
 
+    if (listhead == &standby_list) {
+        debug_checks_standby_counter();
+    }
+
     return popped_page;
 }
 
 
-page_t* popFromAnywhere(page_t* listhead, page_t* given_page) {
-    //page_t* returned_page;
+void popFromAnywhere(page_t* listhead, page_t* given_page) {
+
+    // Remember to remove this once we find the 
+    // standby_list.num_pages bug
+    
+    #if 0
+    page_t* curr_page = listhead->flink;
+    while (curr_page != listhead) {
+        if (curr_page == given_page) {
+            break;
+        }
+        curr_page = curr_page->flink;
+    }
+
+    if (curr_page == listhead) {
+        DebugBreak();
+    }
+
+    #endif
 
     //Checks to see if its the tail or first real page
     if (listhead->blink == given_page) {
@@ -144,24 +183,29 @@ page_t* popFromAnywhere(page_t* listhead, page_t* given_page) {
         given_page = popHeadPage(listhead);
     }
     // If not first page or tail page, its somewhere in the middle
+
     else {
+        // Once we find the standby_list.num_pages bug,
+        // remove this since its O(n)
+
         page_t* prev_page = given_page->blink;
         prev_page->flink = given_page->flink;
         given_page->flink->blink = prev_page;
         listhead->num_of_pages -= 1;
     }
 
-    return given_page;
+    if (listhead == &standby_list) {
+        debug_checks_standby_counter();
+    }
+
+    //return given_page;
 }
 
 // From TS
 void addToHead(page_t* listhead, page_t* new_page) {
 
-    //EnterCriticalSection(&listhead->list_lock);
-
     if (listhead == NULL) {
         printf("Given listhead is NULL (addToTail)\n");
-        //LeaveCriticalSection(&listhead->list_lock);
         return;
     }
 
@@ -171,9 +215,23 @@ void addToHead(page_t* listhead, page_t* new_page) {
     new_page->blink = listhead;
     listhead->num_of_pages += 1;
 
-    return;
+    if (listhead == &standby_list) {
+        debug_checks_standby_counter();
+    }
 
-    //LeaveCriticalSection(&listhead->list_lock);
+    if (listhead == &standby_list && new_page->pagefile_num == 0) {
+        DebugBreak();
+    }
+
+    if (listhead == &modified_list && new_page->pagefile_num != 0) {
+        DebugBreak();
+    }
+
+    if (listhead == &standby_list && listhead->num_of_pages >= 1) {
+        SetEvent(pages_available);
+    }
+
+    return;
 
 }
 
@@ -195,4 +253,24 @@ ULONG64 page_to_pfn(page_t* given_page) {
     }
 
     return (ULONG64)(given_page - base_pfn);
+}
+
+
+VOID debug_checks_standby_counter() {
+    #if 0
+    // If not, debugbreak because flink should 
+    // never equal blink if num_of_pages != 0;
+
+    unsigned count = 0;
+
+    page_t* curr_page = standby_list.flink;
+    while (curr_page != &standby_list) {
+        count += 1;
+        curr_page = curr_page->flink;
+    }
+
+    if (count != standby_list.num_of_pages) {
+        DebugBreak();
+    }
+    #endif
 }

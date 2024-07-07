@@ -22,19 +22,21 @@ typedef struct {
     // Always zero
     ULONG64 valid: 1;
 
-    // Can never be zero! 
-    ULONG64 disc_number: 40;
-    // Always zero
+    // Always zero (must line up with transition format)
     ULONG64 in_memory: 1;
+
+    // Find where the page was stored on disk
+    // (pagefile_blocks, range 0-99)
+    ULONG64 pagefile_num: 7;
 } INVALID_PTE;
 
 typedef struct {
     // Always zero
     ULONG64 valid: 1;
-    ULONG64 frame_number: 40;
-    // Always one
+    // Always one (must share same space as disk format)
     ULONG64 in_memory: 1;
-    //ULONG64 is_modified: 1;
+    ULONG64 frame_number: 40;
+    // ULONG64 is_modified: 1;
 } TRANSITION_PTE;
 
 typedef struct {

@@ -12,6 +12,10 @@ typedef struct page {
     ULONG64 num_of_pages;
     PTE* pte;
 
+    // Find where the page was stored on disk
+    // (pagefile_blocks, range 0-99)
+    ULONG64 pagefile_num;
+
     CRITICAL_SECTION list_lock;
 } page_t;
 
@@ -22,9 +26,10 @@ void instantiateModifiedList();
 page_t* page_create(page_t* base, ULONG_PTR page_num);
 page_t* popTailPage(page_t* listhead);
 page_t* popHeadPage(page_t* listhead);
-page_t* popFromAnywhere(page_t* listhead, page_t* given_page);
+void popFromAnywhere(page_t* listhead, page_t* given_page);
 void addToHead(page_t* listhead, page_t* given_page);
 page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb);
 ULONG64 page_to_pfn(page_t* given_page);
+VOID debug_checks_standby_counter();
 
 #endif //FREELIST_H

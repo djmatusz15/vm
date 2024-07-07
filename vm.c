@@ -281,6 +281,7 @@ page_t* base_pfn;
 HANDLE trim_now;
 HANDLE aging_event;
 PAGE_TABLE* pgtb;
+ULONG64 num_pagefile_blocks;
 
 VOID
 full_virtual_memory_test (
@@ -360,6 +361,16 @@ full_virtual_memory_test (
     //
 
     virtual_address_size &= ~PAGE_SIZE;
+
+
+    // Calculates the number of pagefile blocks dynamically.
+    // +1 is because we save PTE bits;
+    // don't use the first pagefile block of i = 0
+    // so that we can lose a pagefile block instead of 
+    // using a precious PTE bit
+
+    num_pagefile_blocks = (virtual_address_size / PAGE_SIZE) - physical_page_count + 1;
+
 
     virtual_address_size_in_unsigned_chunks =
                         virtual_address_size / sizeof (ULONG_PTR);
@@ -455,7 +466,7 @@ full_virtual_memory_test (
 
             BOOL pagefault_success = pagefault(arbitrary_va);
             if (pagefault_success == FALSE) {
-                printf("Failed pagefault\n");
+                //printf("Failed pagefault\n");
             }
 
             i -=1 ;
