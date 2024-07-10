@@ -56,7 +56,12 @@ typedef struct {
 typedef struct {
     PTE* pte_array;
     ULONG64 num_ptes;
-    PTE_LOCK* pte_regions_locks;
+
+    // Reemply once we start ABBA solution
+    //PTE_LOCK* pte_regions_locks;
+
+    // Just for testing mulitple faulting threads
+    CRITICAL_SECTION lock;
 } PAGE_TABLE;
 
 

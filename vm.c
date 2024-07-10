@@ -5,18 +5,20 @@
 #include "pagetable.h"
 #include "pagefault.h"
 #include "threads.h"
+#include "globals.h"
 #pragma comment(lib, "advapi32.lib")
 
 #define PAGE_SIZE                   4096
 
-#define MB(x)                       ((x) * 1024 * 1024)
+// #define MB(x)                       ((x) * 1024 * 1024)
+// #define GB(x)                       ((x) * 1024 * 1024 * 1024)
 
 //
 // This is intentionally a power of two so we can use masking to stay
 // within bounds.
 //
 
-#define VIRTUAL_ADDRESS_SIZE        MB(16)
+// #define VIRTUAL_ADDRESS_SIZE        MB(16)
 
 #define VIRTUAL_ADDRESS_SIZE_IN_UNSIGNED_CHUNKS        (VIRTUAL_ADDRESS_SIZE / sizeof (ULONG_PTR))
 
@@ -25,7 +27,7 @@
 // virtual address space !
 //
 
-#define NUMBER_OF_PHYSICAL_PAGES   ((VIRTUAL_ADDRESS_SIZE / PAGE_SIZE) / 64)
+// #define NUMBER_OF_PHYSICAL_PAGES   ((VIRTUAL_ADDRESS_SIZE / PAGE_SIZE) / 64)
 
 BOOL
 GetPrivilege  (
@@ -354,6 +356,9 @@ full_virtual_memory_test (
     // to illustrate how we can manage the illusion.
     //
 
+
+
+    // #if 0
     virtual_address_size = 64 * physical_page_count * PAGE_SIZE;
 
     //
@@ -364,16 +369,18 @@ full_virtual_memory_test (
 
 
     // Calculates the number of pagefile blocks dynamically.
-    // +1 is because we save PTE bits;
+    // +2 is because we save PTE bits;
     // don't use the first pagefile block of i = 0
     // so that we can lose a pagefile block instead of 
-    // using a precious PTE bit
+    // using a precious PTE bit. We do +2 
 
-    num_pagefile_blocks = (virtual_address_size / PAGE_SIZE) - physical_page_count + 1;
+    num_pagefile_blocks = (virtual_address_size / PAGE_SIZE) - physical_page_count + 2;
 
 
     virtual_address_size_in_unsigned_chunks =
                         virtual_address_size / sizeof (ULONG_PTR);
+    
+    // #endif
 
     p = VirtualAlloc (NULL,
                       virtual_address_size,
@@ -409,73 +416,21 @@ full_virtual_memory_test (
         return;
     }
 
+    srand (time (NULL));
+
     instantiateFreeList(physical_page_numbers, physical_page_count, base_pfn);
     instantiateStandyList();
     instantiateModifiedList();
-    initialize_threads();
-
-    srand (time (NULL));
-
-    arbitrary_va = NULL;
-
-    for (i = 0; i < MB (1); i += 1) {
+    HANDLE* thread_handles = initialize_threads();
 
 
-        // Trigger events:
-        // 1) Have an aging event every 32nd random access
-        // 2) Have a trimming event once the freelist pages runs
-        // below about 15%
+    WaitForSingleObject(thread_handles[3], INFINITE);
+    WaitForSingleObject(thread_handles[4], INFINITE);
+    //WaitForMultipleObjects(2, &thread_handles[3], TRUE, INFINITE);
 
-        if (i % 32 == 0) {
-            SetEvent(aging_event);
-        }
+    // SetEvent(global_exit_event);
 
-        if ((freelist.num_of_pages + standby_list.num_of_pages) <= (2 * (pgtb->num_ptes) / 7)) {
-            SetEvent(trim_now);
-        }
-
-
-        page_faulted = FALSE;
-
-
-        if (arbitrary_va == NULL) {
-
-            random_number = rand () * rand () * rand ();
-
-            random_number %= virtual_address_size_in_unsigned_chunks;
-
-            random_number = random_number &~ 7;
-            arbitrary_va = (PULONG_PTR)((ULONG_PTR)p + random_number);
-
-        }
-
-        __try {
-
-            *arbitrary_va = (ULONG_PTR) arbitrary_va;
-
-            arbitrary_va = NULL;
-
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-
-            page_faulted = TRUE;
-        }
-
-
-
-        if (page_faulted) {
-
-            BOOL pagefault_success = pagefault(arbitrary_va);
-            if (pagefault_success == FALSE) {
-                //printf("Failed pagefault\n");
-            }
-
-            i -=1 ;
-            continue;
-
-        }
-    }
-
-    printf ("full_virtual_memory_test : finished accessing %u random virtual addresses\n", i);
+    printf ("full_virtual_memory_test : finished accessing random virtual addresses\n");
 
     //
     // Now that we're done with our memory we can be a good

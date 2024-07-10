@@ -11,7 +11,8 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     BOOL handled_fault = TRUE;
 
 
-    LockPagetable(pte_region_index_for_lock);
+    //LockPagetable(pte_region_index_for_lock);
+    EnterCriticalSection(&pgtb->lock);
 
     PTE* curr_pte = &pgtb->pte_array[conv_index];
 
@@ -23,8 +24,9 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
 
     // Active by another thread, skip entirely.
     else if (curr_pte->memory_format.valid == 1) {
-        DebugBreak();
-        printf("Already active by another thread, continue on\n");
+        //DebugBreak();
+        //printf("Already active by another thread, continue on\n");
+        // return TRUE;
     }
 
 
@@ -57,12 +59,13 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
 
     }
 
-    UnlockPagetable(pte_region_index_for_lock);
+    //UnlockPagetable(pte_region_index_for_lock);
+    LeaveCriticalSection(&pgtb->lock);
 
     if (handled_fault == FALSE) {
         SetEvent(trim_now);
 
-        WaitForSingleObject(pages_available, 0);
+        WaitForSingleObject(pages_available, INFINITE);
     }
 
     return TRUE;
@@ -329,9 +332,9 @@ BOOL handle_on_disk(PTE* curr_pte) {
     local_contents.memory_format.age = 0;
     local_contents.memory_format.valid = 1;
     local_contents.memory_format.frame_number = page_to_pfn(repurposed_page);
-    //WriteToPTE(curr_pte, local_contents);
+    WriteToPTE(curr_pte, local_contents);
 
-    *curr_pte = local_contents;
+    //*curr_pte = local_contents;
 
     if (repurposed_page->pagefile_num != 0) {
         DebugBreak();
