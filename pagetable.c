@@ -3,8 +3,8 @@
 #define CONV_INDEX_ADDR(x) (x & ~(PAGE_SIZE - 1))
 #define CONV_INDEX_NUM(x) ((x) >> PAGE_EXP_KB)
 
-// #define NUM_PTE_REGIONS 128
-#define NUM_PTE_REGIONS 1
+#define NUM_PTE_REGIONS 128
+//#define NUM_PTE_REGIONS 1
 #define MAX_AGE 8
 
 #include "pagetable.h"
@@ -43,7 +43,7 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
     // find its index and modulo it with num of PTE
     // regions to lock that region
 
-    #if 0
+    //#if 0
 
     PTE_LOCK* locks = (PTE_LOCK*)malloc(sizeof(PTE_LOCK) * NUM_PTE_REGIONS);
     if (locks == NULL) {
@@ -58,9 +58,9 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
 
     pgtb->pte_regions_locks = locks;
 
-    #endif
+    //#endif
 
-    InitializeCriticalSection(&pgtb->lock);
+    //InitializeCriticalSection(&pgtb->lock);
 
     return pgtb;
 }
@@ -87,6 +87,7 @@ ULONG64 va_to_pte_index(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb) {
 
 PULONG_PTR pte_to_va(PTE* pte, PAGE_TABLE* pgtb) {
     if (pte == NULL) {
+        DebugBreak();
         printf("Given pagetable and/or PTE is NULL\n");
         return NULL;
     }

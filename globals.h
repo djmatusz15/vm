@@ -1,11 +1,11 @@
 #include "list.h"
 
 #define PAGE_SIZE 4096
-// #define NUM_PTE_REGIONS 128
-// #define PTES_PER_REGION 32
+#define NUM_PTE_REGIONS 128
+#define PTES_PER_REGION 32
 
-#define NUM_PTE_REGIONS 1
-#define PTES_PER_REGION 4096
+// #define NUM_PTE_REGIONS 1
+// #define PTES_PER_REGION 4096
 
 #define MB(x)                       ((x) * 1024 * 1024)
 #define GB(x)                       ((x) * 1024 * 1024 * 1024)

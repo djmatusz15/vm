@@ -6,6 +6,10 @@
 #include "pagetable.h"
 #include "globals.h"
 
+// EACH PAGE MUST HAVE A LOCK!!!
+// Start to implement this to 
+// solve AB/BA
+
 typedef struct page {
     struct page* flink;
     struct page* blink;

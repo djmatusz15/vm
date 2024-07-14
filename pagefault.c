@@ -11,8 +11,9 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     BOOL handled_fault = TRUE;
 
 
-    //LockPagetable(pte_region_index_for_lock);
-    EnterCriticalSection(&pgtb->lock);
+
+    LockPagetable(pte_region_index_for_lock);
+    //EnterCriticalSection(&pgtb->lock);
 
     PTE* curr_pte = &pgtb->pte_array[conv_index];
 
@@ -45,7 +46,7 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     // HANDLE BRAND NEW PTE
     else if (curr_pte->entire_format == 0) {
 
-        handled_fault = handle_new_pte(curr_pte);
+        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock);
 
     }
 
@@ -55,17 +56,20 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     // to the PTE
     else {
 
-        handled_fault = handle_on_disk(curr_pte);
+        handled_fault = handle_on_disk(curr_pte, pte_region_index_for_lock);
 
     }
 
-    //UnlockPagetable(pte_region_index_for_lock);
-    LeaveCriticalSection(&pgtb->lock);
+    
+
+    UnlockPagetable(pte_region_index_for_lock);
+    //LeaveCriticalSection(&pgtb->lock);
 
     if (handled_fault == FALSE) {
         SetEvent(trim_now);
 
-        WaitForSingleObject(pages_available, INFINITE);
+        // Change back to infinite
+        WaitForSingleObject(pages_available, 0);
     }
 
     return TRUE;
@@ -192,7 +196,7 @@ VOID rescuePTE(PTE* curr_pte) {
 // from standby. Repurpose the page so
 // this PTE is active and can use it
 
-BOOL handle_new_pte(PTE* curr_pte) {
+BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     PTE_LOCK* pte_lock;
     ULONG64 pte_pfn;
     ULONG64 popped_pfn;
@@ -213,9 +217,10 @@ BOOL handle_new_pte(PTE* curr_pte) {
 
         EnterCriticalSection(&standby_list.list_lock);
 
-        curr_page = recycleOldestPage();
+        curr_page = recycleOldestPage(pte_region_index_for_lock);
         if (curr_page == NULL) {
             //printf("Couldn't get oldest page(handle_new_pte)\n");
+
             LeaveCriticalSection(&standby_list.list_lock);
 
 
@@ -261,7 +266,7 @@ BOOL handle_new_pte(PTE* curr_pte) {
     return TRUE;
 }
 
-BOOL handle_on_disk(PTE* curr_pte) {
+BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     page_t* repurposed_page;
     BOOL on_standby;
     ULONG64 curr_pte_pagefile_num = curr_pte->disc_format.pagefile_num;
@@ -279,7 +284,7 @@ BOOL handle_on_disk(PTE* curr_pte) {
 
         EnterCriticalSection(&standby_list.list_lock);
 
-        repurposed_page = recycleOldestPage();
+        repurposed_page = recycleOldestPage(pte_region_index_for_lock);
         if (repurposed_page == NULL) {
             //printf("Couldn't get oldest page\n");
             LeaveCriticalSection(&standby_list.list_lock);
@@ -287,7 +292,8 @@ BOOL handle_on_disk(PTE* curr_pte) {
             // No pages left, maybe trigger the trim event now.
             // When making faulting threads that are waiting, 
             // we want to trigger an event, and release PTE lock
-            // SetEvent(trim_now)
+            
+            //SetEvent(trim_now);
             return FALSE;
         }
 
@@ -325,6 +331,7 @@ BOOL handle_on_disk(PTE* curr_pte) {
         DebugBreak();
 
     }
+
 
     PTE local_contents;
     local_contents.entire_format = 0;
@@ -384,23 +391,62 @@ BOOL handle_on_disk(PTE* curr_pte) {
 
 
 // Caller already holds standby list lock
-page_t* recycleOldestPage() {
-    page_t* curr_page = popHeadPage(&standby_list);
+page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
+
+    page_t* curr_page;
+
+    // Peak into the standby list, and see if we can actually
+    // access the PTE region of the standby list's flink's PTE.
+    // If we can, continue as normal. Else, return NULL.
+    
+    // In handle_new_pte and handle_on_disk, when we see 
+    // recycleOldestPage() return NULL, we release both
+    // the standby list lock and the current regions lock,
+    // freeing it for any other faulting pages that were deadlocked
+
+
+    PTE* attempt_pte = standby_list.flink->pte;
+
+    if (attempt_pte == NULL) {
+        SetEvent(trim_now);
+        return NULL;
+    }
+
+    PULONG_PTR attempt_va = pte_to_va(attempt_pte, pgtb);
+    ULONG64 attempt_index = va_to_pte_index(attempt_va, pgtb);
+    ULONG64 attempt_region = attempt_index / PTES_PER_REGION;
+
+
+    // Either owned by someone else OR we own it already!
+    // DM: We have a problem if we already own the lock,
+    // i.e. attempt_region == pte_region_index_for_lock
+
+    if (TryEnterCriticalSection(&pgtb->pte_regions_locks[attempt_region].lock) == 0) {
+        //printf("Region lock owned by someone else, surrender\n");
+        return NULL;
+    }
+
+    DWORD curr_thread = GetCurrentThreadId();
+
+    if (pgtb->pte_regions_locks[attempt_region].owning_thread != 0) {
+        if (pgtb->pte_regions_locks[attempt_region].owning_thread != curr_thread) {
+            DebugBreak();
+        }
+    }
+    
+    pgtb->pte_regions_locks[attempt_region].owning_thread = curr_thread;
+
+
+    curr_page = popHeadPage(&standby_list);
 
     // Couldn't get from standby either
     if (curr_page == NULL) {
+        DebugBreak();
+        // UnlockPagetable(pte_region_index_for_lock);
         return NULL;
     }
 
     PTE* old_pte = curr_page->pte;
-
-    // DM: When multiple faulting threads running,
-    // must lock the PTE region to curr_page as well
-
-    // DM: When we get to this point, we have the curr
-    // page, but we do not have the PTE lock for it. So,
-    // we must enter the PTE lock for that page's old PTE,
-    // 
 
     BOOL unmap = unmap_va(pte_to_va(old_pte, pgtb));
     if (unmap == FALSE) {
@@ -415,15 +461,23 @@ page_t* recycleOldestPage() {
     local_contents.entire_format = 0;
 
     local_contents.disc_format.in_memory = 0;
-
     // Remind old PTE where to get its contents from
     local_contents.disc_format.pagefile_num = curr_page->pagefile_num;
 
-    //WriteToPTE(old_pte, local_contents);
+    WriteToPTE(old_pte, local_contents);
 
-    *old_pte = local_contents;
+    // *old_pte = local_contents;
 
     curr_page->pagefile_num = 0;
+
+    UnlockPagetable(attempt_region);
+
+    // DM: could there be a race condition here,
+    // where once I unlock this region, someone else
+    // could access this PTE and edit it, since
+    // we have popped it off the standby list?
+    // Thus, even though we still have the standby list lock,
+    // this PTE will be naked?
 
     return curr_page;
 }

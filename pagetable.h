@@ -58,10 +58,10 @@ typedef struct {
     ULONG64 num_ptes;
 
     // Reemply once we start ABBA solution
-    //PTE_LOCK* pte_regions_locks;
+    PTE_LOCK* pte_regions_locks;
 
     // Just for testing mulitple faulting threads
-    CRITICAL_SECTION lock;
+    // CRITICAL_SECTION lock;
 } PAGE_TABLE;
 
 

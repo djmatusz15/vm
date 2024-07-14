@@ -2,7 +2,6 @@
 #define PAGE_SIZE 4096
 
 #include "list.h"
-#include "pagetable.h"
 
 HANDLE trim_now;
 

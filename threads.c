@@ -24,8 +24,8 @@ LPTHREAD_START_ROUTINE handle_trimming() {
                 break;
             }
 
-            //LockPagetable(i);
-            EnterCriticalSection(&pgtb->lock);
+            LockPagetable(i);
+            //EnterCriticalSection(&pgtb->lock);
 
             for (unsigned j = i * ptes_per_region; j < ((i+1) * (ptes_per_region)); j++) {
 
@@ -82,8 +82,9 @@ LPTHREAD_START_ROUTINE handle_trimming() {
                     trimmed_pages_count++;
                 }
             }
-            //UnlockPagetable(i);
-            LeaveCriticalSection(&pgtb->lock);
+            
+            UnlockPagetable(i);
+            //LeaveCriticalSection(&pgtb->lock);
         }
 
         if (i == NUM_PTE_REGIONS) {
@@ -186,8 +187,8 @@ LPTHREAD_START_ROUTINE handle_aging() {
 
         for (unsigned i = 0; i < NUM_PTE_REGIONS; i++) {
 
-            //LockPagetable(i);
-            EnterCriticalSection(&pgtb->lock);
+            LockPagetable(i);
+            //EnterCriticalSection(&pgtb->lock);
             
             for (unsigned j = i * ptes_per_region; j < ((i+1) * ptes_per_region); j++) {
 
@@ -209,8 +210,8 @@ LPTHREAD_START_ROUTINE handle_aging() {
                 }
             }
 
-            //UnlockPagetable(i);
-            LeaveCriticalSection(&pgtb->lock);
+            UnlockPagetable(i);
+            //LeaveCriticalSection(&pgtb->lock);
 
         }
     }
@@ -330,7 +331,7 @@ HANDLE* initialize_threads(VOID)
 }
 
 
-#if 0
+//#if 0
 
 VOID LockPagetable(unsigned i) {
     if (i >= NUM_PTE_REGIONS) {
@@ -341,9 +342,9 @@ VOID LockPagetable(unsigned i) {
     EnterCriticalSection(&pgtb->pte_regions_locks[i].lock);
     DWORD curr_thread = GetCurrentThreadId();
 
-    if (pgtb->pte_regions_locks[i].owning_thread != 0) {
-        DebugBreak();
-    }
+    // if (pgtb->pte_regions_locks[i].owning_thread != 0) {
+    //     DebugBreak();
+    // }
 
     pgtb->pte_regions_locks[i].owning_thread = curr_thread;
 }
@@ -358,16 +359,16 @@ VOID UnlockPagetable(unsigned i) {
 
     DWORD curr_thread = GetCurrentThreadId();
 
-    if (pgtb->pte_regions_locks[i].owning_thread != curr_thread) {
-        DebugBreak();
-    }
+    // if (pgtb->pte_regions_locks[i].owning_thread != curr_thread) {
+    //     DebugBreak();
+    // }
 
     pgtb->pte_regions_locks[i].owning_thread = 0;
     LeaveCriticalSection(&pgtb->pte_regions_locks[i].lock);
 }
 
 
-#endif
+//#endif
 
 
 
