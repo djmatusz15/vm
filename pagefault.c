@@ -23,11 +23,35 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     }
 
 
-    // Active by another thread, skip entirely.
+    // Active by another thread, or set to valid previously
     else if (curr_pte->memory_format.valid == 1) {
-        //DebugBreak();
-        //printf("Already active by another thread, continue on\n");
-        // return TRUE;
+        // DM: Here, we have to check if the valid bit was set
+        // because we pagefaulted on THIS PTE and mapped the VA
+        // to a physical address, or because we set the valid bit 
+        // since it was a neighbor of a VA we had pagefaulted on.
+
+        PULONG_PTR curr_pte_va = pte_to_va(curr_pte, pgtb);
+
+        // If this is true, then we know we have accessed one of those
+        // neighbor PTEs, since it's valid but never mapped the VA to
+        // a PA. So, that's all we have to do here.
+        if (curr_pte_va == NULL) {
+            ULONG64 neighbor_pte_pfn = curr_pte->memory_format.frame_number;
+            if (MapUserPhysicalPages(arbitrary_va, 1, &neighbor_pte_pfn) == FALSE) {
+                DebugBreak();
+                printf("Could not map neighbor VA to its PA\n");
+                return FALSE;
+            }
+        }
+        
+
+        // DM: I am confused here. It seems to work fine. However, let's
+        // say I set the neighbor PTE to valid. When I set the neighbor to
+        // valid, I don't map the VA to the PA yet. So, what if I make the 
+        // neighbor PTE valid, and before I fault on it again, the trimmer takes
+        // it and unmaps it. Why don't I get a DebugBreak then, since the trimmer
+        // will try to unmap a VA from the PA that was never mapped in the first place?
+
     }
 
 
@@ -46,7 +70,7 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     // HANDLE BRAND NEW PTE
     else if (curr_pte->entire_format == 0) {
 
-        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock);
+        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock, FALSE);
 
     }
 
@@ -68,8 +92,8 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     if (handled_fault == FALSE) {
         SetEvent(trim_now);
 
-        // Change back to infinite
-        WaitForSingleObject(pages_available, 0);
+        // DM: Change back to infinite
+        // WaitForSingleObject(pages_available, 0);
     }
 
     return TRUE;
@@ -181,6 +205,10 @@ VOID rescuePTE(PTE* curr_pte) {
     if (listhead != &modified_list) {
         pagefile_state[curr_page->pagefile_num] = 0;
         curr_page->pagefile_num = 0;
+
+        // DM: Need to set event here saying pagefile
+        // state at this spot is now free!
+        SetEvent(pagefile_blocks_available);
     }
 
     // DM: Does this need to be in the modified_list
@@ -196,7 +224,7 @@ VOID rescuePTE(PTE* curr_pte) {
 // from standby. Repurpose the page so
 // this PTE is active and can use it
 
-BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
+BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, BOOL neighbor_validated) {
     PTE_LOCK* pte_lock;
     ULONG64 pte_pfn;
     ULONG64 popped_pfn;
@@ -261,6 +289,44 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     }
     else {
         LeaveCriticalSection(&freelist.list_lock);
+    }
+
+    // DM: Here, I am starting to implement making multiple
+    // PTEs valid on a single page fault. Here is how I 
+    // want to do it:
+
+    // 1) We get the converted index of the arbitrary VA that
+    // we used to get to this PTE
+    // 2) We use modulo to figure out where in a specific 
+    // PTE region this PTE is. Depending on this, we know
+    // the range of which PTEs we can make valid without
+    // accidentally making a PTE(s) valid in another region
+    // that we don't have the lock to
+    // 3) We make these surrounding PTEs valid
+
+    if (neighbor_validated == TRUE) {
+        return TRUE;
+    }
+
+    ULONG64 curr_pte_index = va_to_pte_index(arbitrary_va, pgtb);
+    ULONG64 curr_pte_loc_intra_region = curr_pte_index % PTES_PER_REGION;
+
+    if (curr_pte_loc_intra_region + 1 != 32) {
+        PTE* next_pte = &pgtb->pte_array[curr_pte_index + 1];
+
+        // Make sure this neighbor has never been accessed before!
+        if (next_pte->entire_format == 0) {
+            handle_new_pte(next_pte, pte_region_index_for_lock, TRUE);
+        }
+    }
+
+    if (curr_pte_loc_intra_region - 1 >= 0) {
+        PTE* prev_pte = &pgtb->pte_array[curr_pte_index - 1];
+
+        // Make sure this neighbor has never been accessed before!
+        if (prev_pte->entire_format == 0) {
+            handle_new_pte(prev_pte, pte_region_index_for_lock, TRUE);
+        }
     }
 
     return TRUE;

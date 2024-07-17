@@ -4,7 +4,6 @@
 #define CONV_INDEX_NUM(x) ((x) >> PAGE_EXP_KB)
 
 #define NUM_PTE_REGIONS 128
-//#define NUM_PTE_REGIONS 1
 #define MAX_AGE 8
 
 #include "pagetable.h"
@@ -59,8 +58,6 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
     pgtb->pte_regions_locks = locks;
 
     //#endif
-
-    //InitializeCriticalSection(&pgtb->lock);
 
     return pgtb;
 }

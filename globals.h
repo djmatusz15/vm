@@ -13,7 +13,7 @@
 #define VIRTUAL_ADDRESS_SIZE        MB(16)
 #define NUMBER_OF_PHYSICAL_PAGES   ((VIRTUAL_ADDRESS_SIZE / PAGE_SIZE) / 64)
 
-#define NUM_OF_THREADS              5
+#define NUM_OF_THREADS             5
 
 extern page_t* base_pfn;
 

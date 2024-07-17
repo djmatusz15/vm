@@ -32,6 +32,7 @@ page_t* popTailPage(page_t* listhead);
 page_t* popHeadPage(page_t* listhead);
 void popFromAnywhere(page_t* listhead, page_t* given_page);
 void addToHead(page_t* listhead, page_t* given_page);
+void addToTail(page_t* listhead, page_t* new_page);
 page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb);
 ULONG64 page_to_pfn(page_t* given_page);
 VOID debug_checks_standby_counter();

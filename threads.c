@@ -3,7 +3,12 @@
 
 
 // Handles trimming PTEs that are active, and moving them
-// to modified list. Switch the PTE as well.
+// to modified list.
+
+// DM:
+// Must add to head and pop from tail!!
+// Removing and adding to head! Not efficient
+// and not going to work in some places!
 
 LPTHREAD_START_ROUTINE handle_trimming() {
 
@@ -74,7 +79,7 @@ LPTHREAD_START_ROUTINE handle_trimming() {
                     SetEvent(modified_list_notempty);
 
                     
-                    if ((freelist.num_of_pages + modified_list.num_of_pages) >= (2 * (pgtb->num_ptes)) / 7) {
+                    if ((standby_list.num_of_pages + modified_list.num_of_pages) > (2 * (pgtb->num_ptes)) / 7) {
                         trimmed_enough = TRUE;
                         break;
                     }
@@ -92,7 +97,6 @@ LPTHREAD_START_ROUTINE handle_trimming() {
             continue;
         }
     }
-    printf("Trimmed pages: %d\n", trimmed_pages_count);
 }
 
 #define FREE 0
@@ -129,7 +133,15 @@ LPTHREAD_START_ROUTINE handle_modifying() {
             addToHead(&modified_list, curr_page);
 
             LeaveCriticalSection(&modified_list.list_lock);
-            WaitForSingleObject(pagefile_blocks_available, 0);
+
+            // DM: When it is INFINITE (waits for signal), 
+            // I get to a point where it repeats the same VA
+            // over and over. I believe (not certain) that the
+            // read from disk keeps failing for a given
+            // page since we say its on the pagefile but it
+            // can't find it
+
+            WaitForSingleObject(pagefile_blocks_available, INFINITE);
             continue;
         }
 
@@ -265,7 +277,13 @@ LPTHREAD_START_ROUTINE handle_faulting() {
             SetEvent(aging_event);
         }
 
-        if ((freelist.num_of_pages + standby_list.num_of_pages) <= (2 * (pgtb->num_ptes) / 7)) {
+
+        // DM: Maybe don't do this every time now?
+        // We may be trimming too much too fast, and
+        // inadvertently making the modified writer wait
+        // a long time since the pagefile will constantly be full
+
+        if ((standby_list.num_of_pages + modified_list.num_of_pages) <= (2 * (pgtb->num_ptes) / 7)) {
             SetEvent(trim_now);
         }
 
@@ -325,7 +343,6 @@ HANDLE* initialize_threads(VOID)
     threads[2] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_modifying, NULL, 0, NULL);
     threads[3] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
     threads[4] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
-
 
     return threads;
 }

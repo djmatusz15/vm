@@ -204,7 +204,7 @@ void popFromAnywhere(page_t* listhead, page_t* given_page) {
 void addToHead(page_t* listhead, page_t* new_page) {
 
     if (listhead == NULL) {
-        printf("Given listhead is NULL (addToTail)\n");
+        printf("Given listhead is NULL (addToHead)\n");
         return;
     }
 
@@ -234,6 +234,36 @@ void addToHead(page_t* listhead, page_t* new_page) {
 
 }
 
+void addToTail(page_t* listhead, page_t* new_page) {
+    if (listhead == NULL) {
+        printf("Given listhead is NULL (addToHead)\n");
+        return;
+    }
+
+    new_page->flink = listhead;
+    new_page->blink = listhead->blink;
+    listhead->blink->flink = new_page;
+    listhead->blink = new_page;
+    listhead->num_of_pages += 1;
+
+    if (listhead == &standby_list) {
+        debug_checks_standby_counter();
+    }
+
+    if (listhead == &standby_list && new_page->pagefile_num == 0) {
+        DebugBreak();
+    }
+
+    if (listhead == &modified_list && new_page->pagefile_num != 0) {
+        DebugBreak();
+    }
+
+    if (listhead == &standby_list && listhead->num_of_pages >= 1) {
+        SetEvent(pages_available);
+    }
+
+    return;
+}
 
 page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb) {
     if (pgtb == NULL || given_pfn == 0) {
