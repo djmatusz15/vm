@@ -4,7 +4,7 @@
 #define PAGE_SIZE 4096
 #define NUM_PTE_REGIONS 128
 #define PTES_PER_REGION 32
-#define BATCH_SIZE 8
+#define BATCH_SIZE 16
 
 // #define NUM_PTE_REGIONS 1
 // #define PTES_PER_REGION 4096

@@ -464,7 +464,8 @@ VOID WriteToPTE(PTE* pte, PTE pte_contents) {
 
 
 // At this point, handle_modifying already has
-// modified_list lock 
+// modified_list lock (for mapping a single page
+// to pagefile at a time, outdated)
 
 BOOL map_to_pagefile(page_t* curr_page, unsigned pagefile_slot) {
 
