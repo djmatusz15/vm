@@ -97,97 +97,23 @@ LPTHREAD_START_ROUTINE handle_trimming() {
     }
 }
 
-// #define FREE 0
-// #define IN_USE 1
-// #define BATCH_SIZE 16
 
-// LPTHREAD_START_ROUTINE handle_modifying() {
-
-
-//      while (1) {
-
-//         EnterCriticalSection(&modified_list.list_lock);
-
-//         page_t* curr_page = popHeadPage(&modified_list);
-//         if (curr_page == NULL) {
-//             //printf("Could not pop head from modified list\n");
-
-//             LeaveCriticalSection(&modified_list.list_lock);
-//             WaitForSingleObject(modified_list_notempty, INFINITE);
-//             continue;
-//         }
-
-//         // Leave out first disk space so that 
-//         // there are no collisions with frame numbers
-//         // in valid or transition PTEs; no ambiguity
-//         unsigned i;
-//         for (i = 1 ; i < num_pagefile_blocks; i++) {
-//             if (pagefile_state[i] == FREE) {
-//                 pagefile_state[i] = IN_USE;
-//                 break;
-//             }
-//         }
-
-//         if (i == num_pagefile_blocks) {
-//             addToHead(&modified_list, curr_page);
-
-//             LeaveCriticalSection(&modified_list.list_lock);
-
-//             // DM: When it is INFINITE (waits for signal), 
-//             // I get to a point where it repeats the same VA
-//             // over and over. I believe (not certain) that the
-//             // read from disk keeps failing for a given
-//             // page since we say its on the pagefile but it
-//             // can't find it
-
-//             WaitForSingleObject(pagefile_blocks_available, INFINITE);
-//             continue;
-//         }
-
-//         ULONG64 conv_pfn = curr_page->pte->transition_format.frame_number;
-//         if (MapUserPhysicalPages (modified_page_va, 1, &conv_pfn) == FALSE) {
-
-//             LeaveCriticalSection(&modified_list.list_lock);
-//             printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", modified_page_va, conv_pfn);
-//             DebugBreak();
-
-//         }
-
-//         memcpy(&pagefile_contents[i * PAGE_SIZE], modified_page_va, PAGE_SIZE);
-
-
-//         if (MapUserPhysicalPages (modified_page_va, 1, NULL) == FALSE) {
-
-//             LeaveCriticalSection(&modified_list.list_lock);
-//             printf ("full_virtual_memory_test : could not unmap VA %p\n", modified_page_va);
-//             DebugBreak();
-
-//         }
-
-
-
-
-//         // Add the curr page to standby
-//         EnterCriticalSection(&standby_list.list_lock);
-
-//         curr_page->pagefile_num = i;
-//         addToHead(&standby_list, curr_page);
-
-//         LeaveCriticalSection(&standby_list.list_lock);
-
-//         LeaveCriticalSection(&modified_list.list_lock);
-
-//         // DM: Never had this! Added to set event to pagefault again
-//         SetEvent(pages_available);
-
-//      }
-// }
 
 #define FREE 0
 #define IN_USE 1
-#define BATCH_SIZE 8
 
 LPTHREAD_START_ROUTINE handle_modifying() {
+
+
+    // DM: Keep array to write as a batch to
+    // MapUserPhysicalPages. In the for loop,
+    // pop each page from modified and plug it.
+    // Just keep it as pages, not VAs
+
+
+    page_t** batched_pages;
+
+    batched_pages = malloc(sizeof(page_t*) * BATCH_SIZE);
 
 
      while (1) {
@@ -221,58 +147,61 @@ LPTHREAD_START_ROUTINE handle_modifying() {
         }
 
 
-        // DM: Keep array to write as a batch to
-        // MapUserPhysicalPages. In the for loop,
-        // pop each page from modified and plug it.
-        // Keep track of index in the batch using 
-        // "blocks_taken" variable below
-
-        PULONG_PTR* batched_vas = malloc(sizeof(page_t) * BATCH_SIZE);
-
-
         // Leave out first disk space so that 
         // there are no collisions with frame numbers
         // in valid or transition PTEs; no ambiguity
 
         unsigned i;
-        unsigned blocks_taken = 0;
+        // unsigned blocks_taken = 0;
         for (i = 1 ; i < num_pagefile_blocks; i++) {
 
 
-            // Once we hit batch size, stop 
-            if (blocks_taken == BATCH_SIZE) {
-                break;
+            // DM: Find a chunk of 8 pagefile slots
+            // that are free
+
+            unsigned check_if_free = i;
+            unsigned last_free_block = i + 8;
+            while (check_if_free < last_free_block) {
+                if (pf.pagefile_state[check_if_free] == IN_USE) {
+                    break;
+                }
+                check_if_free++;
             }
 
-            // Find a free spot, then pop from the modified
-            // list, map it correctly, and increment/decrement
-            // our values appropriately
+            // If we didn't find 8 free blocks, continue
+            // do next for loop iteration
 
-            if (pf.pagefile_state[i] == FREE) {
-                // DM: Here, pop the page from modified,
-                // make sure it's not NULL (debugbreak if
-                // it doesn't work) and map the address
-
-                page_t* curr_page = popHeadPage(&modified_list);
-
-                if (curr_page == NULL) {
-                    printf("Page corrupted or mod list NULL\n");
-                    DebugBreak();
-                    LeaveCriticalSection(&modified_list.list_lock);
-                    return NULL;
-                }
-
-                BOOL mapped_to_pagefile = map_to_pagefile(curr_page, i);
-                if (mapped_to_pagefile == FALSE) {
-                    printf("Mapping to temp VA didn't work\n");
-                    DebugBreak();
-                    return NULL;
-                }
-
-                pf.free_pagefile_blocks--;
-                pf.pagefile_state[i] = IN_USE;
-                blocks_taken++;
+            if (check_if_free != last_free_block) {
+                continue;
             }
+
+            // if we made it, break out of the for loop
+            break;
+
+        }
+
+        for (unsigned j = 0; j < BATCH_SIZE; j++) {
+
+            page_t* curr_page = popHeadPage(&modified_list);
+
+            if (curr_page == NULL) {
+                printf("Page corrupted or mod list NULL\n");
+                DebugBreak();
+                LeaveCriticalSection(&modified_list.list_lock);
+                return NULL;
+            }
+
+            batched_pages[j] = curr_page;
+
+        }
+
+        // Use i to know where to start mapping to on the pagefile
+
+        BOOL mapped_batch_to_pagefile = map_batch_to_pagefile(batched_pages, i);
+        if (mapped_batch_to_pagefile == FALSE) {
+            printf("Mapping to temp VA didn't work\n");
+            DebugBreak();
+            return NULL;
         }
 
         LeaveCriticalSection(&modified_list.list_lock);
@@ -375,7 +304,7 @@ LPTHREAD_START_ROUTINE handle_faulting() {
 
     LPVOID modified_page_va2 = VirtualAlloc2 (NULL,
                        NULL,
-                       virtual_address_size,
+                       PAGE_SIZE,
                        MEM_RESERVE | MEM_PHYSICAL,
                        PAGE_READWRITE,
                        &parameter,
@@ -570,6 +499,60 @@ BOOL map_to_pagefile(page_t* curr_page, unsigned pagefile_slot) {
 
     curr_page->pagefile_num = pagefile_slot;
     addToHead(&standby_list, curr_page);
+
+    LeaveCriticalSection(&standby_list.list_lock);
+
+    return TRUE;
+}
+
+
+BOOL map_batch_to_pagefile(page_t** batched_pages, unsigned pagefile_slot) {
+
+    // Get array of pfns, map array to temp VA, memcpy then unmap.
+    // Don't forget to change size from 1 pages to 8!
+
+    ULONG64* batched_pfns;
+
+    batched_pfns = malloc(sizeof(ULONG64) * BATCH_SIZE);
+
+    for (unsigned i = 0; i < BATCH_SIZE; i++) {
+        ULONG64 curr_pfn = page_to_pfn(batched_pages[i]);
+        batched_pfns[i] = curr_pfn;
+    }
+
+    if (MapUserPhysicalPages (modified_page_va, BATCH_SIZE, batched_pfns) == FALSE) {
+
+        LeaveCriticalSection(&modified_list.list_lock);
+        printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", modified_page_va, batched_pfns);
+        DebugBreak();
+
+        return FALSE;
+
+    }
+
+    memcpy(&pf.pagefile_contents[pagefile_slot * PAGE_SIZE], modified_page_va, BATCH_SIZE * PAGE_SIZE);
+
+
+    if (MapUserPhysicalPages (modified_page_va, BATCH_SIZE, NULL) == FALSE) {
+
+        LeaveCriticalSection(&modified_list.list_lock);
+        printf ("full_virtual_memory_test : could not unmap VA %p\n", modified_page_va);
+        DebugBreak();
+
+        return FALSE;
+
+    }
+
+
+    // Add the pages to standby
+    EnterCriticalSection(&standby_list.list_lock);
+
+    for (unsigned i = 0; i < BATCH_SIZE; i++) {
+
+        batched_pages[i]->pagefile_num = pagefile_slot + i;
+        addToHead(&standby_list, batched_pages[i]);
+
+    }
 
     LeaveCriticalSection(&standby_list.list_lock);
 

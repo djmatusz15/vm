@@ -510,9 +510,10 @@ full_virtual_memory_test (
 
     WaitForSingleObject(thread_handles[3], INFINITE);
     WaitForSingleObject(thread_handles[4], INFINITE);
-    //WaitForMultipleObjects(2, &thread_handles[3], TRUE, INFINITE);
+
 
     // SetEvent(global_exit_event);
+    
 
     printf ("full_virtual_memory_test : finished accessing random virtual addresses\n");
 

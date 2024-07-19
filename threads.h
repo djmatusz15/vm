@@ -5,8 +5,6 @@
 #include "pagefault.h"
 #include "globals.h"
 
-#define NUM_HANDLES 3
-
 LPTHREAD_START_ROUTINE handle_trimming();
 LPTHREAD_START_ROUTINE handle_modifying();
 LPTHREAD_START_ROUTINE handle_aging();
@@ -19,3 +17,4 @@ VOID WriteToPTE(PTE* pte, PTE pte_contents);
 HANDLE* initialize_threads(VOID);
 
 BOOL map_to_pagefile(page_t* curr_page, unsigned pagefile_slot);
+BOOL map_batch_to_pagefile(page_t** batched_pages, unsigned pagefile_slot);

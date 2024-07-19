@@ -74,6 +74,7 @@ pagefile_t pf;
 void instantiateModifiedList() {
     modified_list.blink = &modified_list;
     modified_list.flink = &modified_list;
+    modified_list.num_of_pages = 0;
 
     modified_list_notempty = CreateEvent(NULL, FALSE, FALSE, NULL);
     pagefile_blocks_available = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -88,7 +89,7 @@ void instantiateModifiedList() {
 
     modified_page_va = VirtualAlloc2 (NULL,
                        NULL,
-                       virtual_address_size,
+                       PAGE_SIZE * BATCH_SIZE,
                        MEM_RESERVE | MEM_PHYSICAL,
                        PAGE_READWRITE,
                        &parameter,
@@ -98,7 +99,7 @@ void instantiateModifiedList() {
 
     // For writing from memory to disk
     modified_page_va = VirtualAlloc(NULL,
-                      PAGE_SIZE,
+                      PAGE_SIZE * BATCH_SIZE,
                       MEM_RESERVE | MEM_PHYSICAL,
                       PAGE_READWRITE);
 
