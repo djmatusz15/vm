@@ -17,3 +17,5 @@ VOID UnlockPagetable(unsigned i);
 VOID WriteToPTE(PTE* pte, PTE pte_contents);
 
 HANDLE* initialize_threads(VOID);
+
+BOOL map_to_pagefile(page_t* curr_page, unsigned pagefile_slot);

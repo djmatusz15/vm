@@ -6,10 +6,6 @@
 #include "pagetable.h"
 #include "globals.h"
 
-// EACH PAGE MUST HAVE A LOCK!!!
-// Start to implement this to 
-// solve AB/BA
-
 typedef struct page {
     struct page* flink;
     struct page* blink;
@@ -24,6 +20,14 @@ typedef struct page {
 } page_t;
 
 
+// typedef struct pagefile {
+//     PUCHAR pagefile_state;
+//     PUCHAR pagefile_contents;
+//     unsigned free_pagefile_blocks;
+// } pagefile_t;
+
+
+
 void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn);
 void instantiateStandyList();
 void instantiateModifiedList();
@@ -35,6 +39,6 @@ void addToHead(page_t* listhead, page_t* given_page);
 void addToTail(page_t* listhead, page_t* new_page);
 page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb);
 ULONG64 page_to_pfn(page_t* given_page);
-VOID debug_checks_standby_counter();
+VOID debug_checks_list_counter();
 
 #endif //FREELIST_H

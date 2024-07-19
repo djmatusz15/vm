@@ -1,6 +1,6 @@
 #include "pagefault.h"
 
-BOOL pagefault(PULONG_PTR arbitrary_va) {
+BOOL pagefault(PULONG_PTR arbitrary_va, LPVOID modified_page_va2) {
 
     ULONG64 conv_index = va_to_pte_index(arbitrary_va, pgtb);
     ULONG64 pte_region_index_for_lock = conv_index / PTES_PER_REGION;
@@ -13,7 +13,6 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
 
 
     LockPagetable(pte_region_index_for_lock);
-    //EnterCriticalSection(&pgtb->lock);
 
     PTE* curr_pte = &pgtb->pte_array[conv_index];
 
@@ -25,32 +24,25 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
 
     // Active by another thread, or set to valid previously
     else if (curr_pte->memory_format.valid == 1) {
+
         // DM: Here, we have to check if the valid bit was set
         // because we pagefaulted on THIS PTE and mapped the VA
         // to a physical address, or because we set the valid bit 
         // since it was a neighbor of a VA we had pagefaulted on.
 
-        PULONG_PTR curr_pte_va = pte_to_va(curr_pte, pgtb);
+        // PULONG_PTR curr_pte_va = pte_to_va(curr_pte, pgtb);
 
-        // If this is true, then we know we have accessed one of those
-        // neighbor PTEs, since it's valid but never mapped the VA to
-        // a PA. So, that's all we have to do here.
-        if (curr_pte_va == NULL) {
-            ULONG64 neighbor_pte_pfn = curr_pte->memory_format.frame_number;
-            if (MapUserPhysicalPages(arbitrary_va, 1, &neighbor_pte_pfn) == FALSE) {
-                DebugBreak();
-                printf("Could not map neighbor VA to its PA\n");
-                return FALSE;
-            }
-        }
-        
-
-        // DM: I am confused here. It seems to work fine. However, let's
-        // say I set the neighbor PTE to valid. When I set the neighbor to
-        // valid, I don't map the VA to the PA yet. So, what if I make the 
-        // neighbor PTE valid, and before I fault on it again, the trimmer takes
-        // it and unmaps it. Why don't I get a DebugBreak then, since the trimmer
-        // will try to unmap a VA from the PA that was never mapped in the first place?
+        // // If this is true, then we know we have accessed one of those
+        // // neighbor PTEs, since it's valid but never mapped the VA to
+        // // a PA. So, that's all we have to do here.
+        // if (curr_pte_va == NULL) {
+        //     ULONG64 neighbor_pte_pfn = curr_pte->memory_format.frame_number;
+        //     if (MapUserPhysicalPages(arbitrary_va, 1, &neighbor_pte_pfn) == FALSE) {
+        //         DebugBreak();
+        //         printf("Could not map neighbor VA to its PA\n");
+        //         return FALSE;
+        //     }
+        // }
 
     }
 
@@ -70,7 +62,7 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     // HANDLE BRAND NEW PTE
     else if (curr_pte->entire_format == 0) {
 
-        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock, FALSE);
+        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock);
 
     }
 
@@ -80,14 +72,13 @@ BOOL pagefault(PULONG_PTR arbitrary_va) {
     // to the PTE
     else {
 
-        handled_fault = handle_on_disk(curr_pte, pte_region_index_for_lock);
+        handled_fault = handle_on_disk(curr_pte, pte_region_index_for_lock, modified_page_va2);
 
     }
 
     
 
     UnlockPagetable(pte_region_index_for_lock);
-    //LeaveCriticalSection(&pgtb->lock);
 
     if (handled_fault == FALSE) {
         SetEvent(trim_now);
@@ -202,20 +193,32 @@ VOID rescuePTE(PTE* curr_pte) {
     local_contents.memory_format.frame_number = pte_pfn;
     WriteToPTE(curr_pte, local_contents);
 
-    if (listhead != &modified_list) {
-        pagefile_state[curr_page->pagefile_num] = 0;
-        curr_page->pagefile_num = 0;
-
-        // DM: Need to set event here saying pagefile
-        // state at this spot is now free!
-        SetEvent(pagefile_blocks_available);
-    }
-
     // DM: Does this need to be in the modified_list
     // critical section?
     curr_page->pte = curr_pte;
 
     LeaveCriticalSection(&listhead->list_lock);
+
+
+    // DM: Need synchronization with some form of lock,
+    // like pagefile lock of IncrementExchange
+
+    if (listhead != &modified_list) {
+
+        EnterCriticalSection(&modified_list.list_lock);
+
+        pf.pagefile_state[curr_page->pagefile_num] = 0;
+        curr_page->pagefile_num = 0;
+
+        pf.free_pagefile_blocks++;
+
+        LeaveCriticalSection(&modified_list.list_lock);
+
+        // DM: Need to set event here saying pagefile
+        // state at this spot is now free!
+
+        SetEvent(pagefile_blocks_available);
+    }
 }
 
 
@@ -224,7 +227,7 @@ VOID rescuePTE(PTE* curr_pte) {
 // from standby. Repurpose the page so
 // this PTE is active and can use it
 
-BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, BOOL neighbor_validated) {
+BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     PTE_LOCK* pte_lock;
     ULONG64 pte_pfn;
     ULONG64 popped_pfn;
@@ -304,35 +307,35 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, BOOL neigh
     // that we don't have the lock to
     // 3) We make these surrounding PTEs valid
 
-    if (neighbor_validated == TRUE) {
-        return TRUE;
-    }
+    // if (neighbor_validated == TRUE) {
+    //     return TRUE;
+    // }
 
-    ULONG64 curr_pte_index = va_to_pte_index(arbitrary_va, pgtb);
-    ULONG64 curr_pte_loc_intra_region = curr_pte_index % PTES_PER_REGION;
+    // ULONG64 curr_pte_index = va_to_pte_index(arbitrary_va, pgtb);
+    // ULONG64 curr_pte_loc_intra_region = curr_pte_index % PTES_PER_REGION;
 
-    if (curr_pte_loc_intra_region + 1 != 32) {
-        PTE* next_pte = &pgtb->pte_array[curr_pte_index + 1];
+    // if (curr_pte_loc_intra_region + 1 != 32) {
+    //     PTE* next_pte = &pgtb->pte_array[curr_pte_index + 1];
 
-        // Make sure this neighbor has never been accessed before!
-        if (next_pte->entire_format == 0) {
-            handle_new_pte(next_pte, pte_region_index_for_lock, TRUE);
-        }
-    }
+    //     // Make sure this neighbor has never been accessed before!
+    //     if (next_pte->entire_format == 0) {
+    //         handle_new_pte(next_pte, pte_region_index_for_lock, TRUE);
+    //     }
+    // }
 
-    if (curr_pte_loc_intra_region - 1 >= 0) {
-        PTE* prev_pte = &pgtb->pte_array[curr_pte_index - 1];
+    // if (curr_pte_loc_intra_region - 1 >= 0) {
+    //     PTE* prev_pte = &pgtb->pte_array[curr_pte_index - 1];
 
-        // Make sure this neighbor has never been accessed before!
-        if (prev_pte->entire_format == 0) {
-            handle_new_pte(prev_pte, pte_region_index_for_lock, TRUE);
-        }
-    }
+    //     // Make sure this neighbor has never been accessed before!
+    //     if (prev_pte->entire_format == 0) {
+    //         handle_new_pte(prev_pte, pte_region_index_for_lock, TRUE);
+    //     }
+    // }
 
     return TRUE;
 }
 
-BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
+BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID modified_page_va2) {
     page_t* repurposed_page;
     BOOL on_standby;
     ULONG64 curr_pte_pagefile_num = curr_pte->disc_format.pagefile_num;
@@ -381,7 +384,7 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
 
     }
 
-    memcpy(modified_page_va2, &pagefile_contents[curr_pte_pagefile_num * PAGE_SIZE], PAGE_SIZE);
+    memcpy(modified_page_va2, &pf.pagefile_contents[curr_pte_pagefile_num * PAGE_SIZE], PAGE_SIZE);
 
 
     if (MapUserPhysicalPages (modified_page_va2, 1, NULL) == FALSE) {
@@ -446,8 +449,10 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     // the disk open again
 
     EnterCriticalSection(&modified_list.list_lock);
-    pagefile_state[curr_pte_pagefile_num] = 0;
+    pf.pagefile_state[curr_pte_pagefile_num] = 0;
+    pf.free_pagefile_blocks++;
     LeaveCriticalSection(&modified_list.list_lock);
+
 
     SetEvent(pagefile_blocks_available);
     
@@ -508,7 +513,6 @@ page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
     // Couldn't get from standby either
     if (curr_page == NULL) {
         DebugBreak();
-        // UnlockPagetable(pte_region_index_for_lock);
         return NULL;
     }
 

@@ -114,6 +114,41 @@ GetPrivilege  (
     return TRUE;
 }
 
+
+#if SUPPORT_MULTIPLE_VA_TO_SAME_PAGE
+
+HANDLE
+CreateSharedMemorySection (
+    VOID
+    )
+{
+    HANDLE section;
+    MEM_EXTENDED_PARAMETER parameter = { 0 };
+
+    //
+    // Create an AWE section.  Later we deposit pages into it and/or
+    // return them.
+    //
+
+    parameter.Type = MemSectionExtendedParameterUserPhysicalFlags;
+    parameter.ULong = 0;
+
+    section = CreateFileMapping2 (INVALID_HANDLE_VALUE,
+                                  NULL,
+                                  SECTION_MAP_READ | SECTION_MAP_WRITE,
+                                  PAGE_READWRITE,
+                                  SEC_RESERVE,
+                                  0,
+                                  NULL,
+                                  &parameter,
+                                  1);
+
+    return section;
+}
+
+#endif
+
+
 VOID
 malloc_test (
     VOID
@@ -275,6 +310,9 @@ commit_at_fault_time_test (
 }
 
 
+HANDLE physical_page_handle;
+ULONG_PTR virtual_address_size;
+
 page_t freelist;
 page_t standby_list;
 page_t modified_list;
@@ -284,6 +322,12 @@ HANDLE trim_now;
 HANDLE aging_event;
 PAGE_TABLE* pgtb;
 ULONG64 num_pagefile_blocks;
+
+#if SUPPORT_MULTIPLE_VA_TO_SAME_PAGE
+
+#pragma comment(lib, "onecore.lib")
+
+#endif
 
 VOID
 full_virtual_memory_test (
@@ -299,8 +343,6 @@ full_virtual_memory_test (
     BOOL obtained_pages;
     ULONG_PTR physical_page_count;
     PULONG_PTR physical_page_numbers;
-    HANDLE physical_page_handle;
-    ULONG_PTR virtual_address_size;
     ULONG_PTR virtual_address_size_in_unsigned_chunks;
 
     //
@@ -316,9 +358,25 @@ full_virtual_memory_test (
     if (privilege == FALSE) {
         printf ("full_virtual_memory_test : could not get privilege\n");
         return;
-    }    
+    }
+
+
+    // Set this to support multiple VAs being set to the 
+    // same physical page
+    #if SUPPORT_MULTIPLE_VA_TO_SAME_PAGE
+
+    physical_page_handle = CreateSharedMemorySection ();
+
+    if (physical_page_handle == NULL) {
+        printf ("CreateFileMapping2 failed, error %#x\n", GetLastError ());
+        return;
+    }
+
+    #else    
 
     physical_page_handle = GetCurrentProcess ();
+
+    #endif
 
     physical_page_count = NUMBER_OF_PHYSICAL_PAGES;
 
@@ -382,10 +440,36 @@ full_virtual_memory_test (
     
     // #endif
 
+    #if SUPPORT_MULTIPLE_VA_TO_SAME_PAGE
+
+    MEM_EXTENDED_PARAMETER parameter = { 0 };
+
+    //
+    // Allocate a MEM_PHYSICAL region that is "connected" to the AWE section
+    // created above.
+    //
+
+    parameter.Type = MemExtendedParameterUserPhysicalHandle;
+    parameter.Handle = physical_page_handle;
+
+    p = VirtualAlloc2 (NULL,
+                       NULL,
+                       virtual_address_size,
+                       MEM_RESERVE | MEM_PHYSICAL,
+                       PAGE_READWRITE,
+                       &parameter,
+                       1);
+
+    #else
+
     p = VirtualAlloc (NULL,
                       virtual_address_size,
                       MEM_RESERVE | MEM_PHYSICAL,
                       PAGE_READWRITE);
+
+    
+    #endif
+
 
     if (p == NULL) {
         printf ("full_virtual_memory_test : could not reserve memory\n");

@@ -8,7 +8,10 @@ HANDLE trim_now;
 void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn) {
     freelist.blink = &freelist;
     freelist.flink = &freelist;
-    //freelist.num_of_pages = num_physical_frames;
+
+    InitializeCriticalSection(&freelist.list_lock);
+
+    EnterCriticalSection(&freelist.list_lock);
 
     for (unsigned i = 0; i < num_physical_frames; i++) {
         page_t* new_page = page_create(base_pfn, physical_frame_numbers[i]);
@@ -16,11 +19,13 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
             printf("Couldn't create new page\n");
         }
 
+        // DM: Starting to implement page locks
+        // InitializeCriticalSection(&new_page->list_lock);
+
         addToHead(&freelist, new_page);
     } 
 
-    InitializeCriticalSection(&freelist.list_lock);
-
+    LeaveCriticalSection(&freelist.list_lock);
 }
 
 page_t* page_create(page_t* base, ULONG_PTR page_num) {
@@ -57,9 +62,10 @@ void instantiateStandyList () {
 HANDLE modified_list_notempty;
 HANDLE pagefile_blocks_available;
 LPVOID modified_page_va;
-LPVOID modified_page_va2;
-PUCHAR pagefile_state;
-PUCHAR pagefile_contents;
+// PUCHAR pagefile_state;
+// PUCHAR pagefile_contents;
+
+pagefile_t pf;
 
 
 // Create modified list
@@ -72,38 +78,52 @@ void instantiateModifiedList() {
     modified_list_notempty = CreateEvent(NULL, FALSE, FALSE, NULL);
     pagefile_blocks_available = CreateEvent(NULL, FALSE, FALSE, NULL);
 
+
+    #if SUPPORT_MULTIPLE_VA_TO_SAME_PAGE
+
+    MEM_EXTENDED_PARAMETER parameter = { 0 };
+
+    parameter.Type = MemExtendedParameterUserPhysicalHandle;
+    parameter.Handle = physical_page_handle;
+
+    modified_page_va = VirtualAlloc2 (NULL,
+                       NULL,
+                       virtual_address_size,
+                       MEM_RESERVE | MEM_PHYSICAL,
+                       PAGE_READWRITE,
+                       &parameter,
+                       1);
+
+    #else
+
     // For writing from memory to disk
     modified_page_va = VirtualAlloc(NULL,
                       PAGE_SIZE,
                       MEM_RESERVE | MEM_PHYSICAL,
                       PAGE_READWRITE);
 
+
+
     if (modified_page_va == NULL) {
         printf ("full_virtual_memory_test : could not reserve memory for temp VA\n");
         return;
     }
 
-    // DM: this is for writing from disk back to new page
-    modified_page_va2 = VirtualAlloc(NULL,
-                      PAGE_SIZE,
-                      MEM_RESERVE | MEM_PHYSICAL,
-                      PAGE_READWRITE);
+    #endif
 
-    if (modified_page_va2 == NULL) {
-        printf ("full_virtual_memory_test : could not reserve memory for temp2 VA\n");
-        return;
-    }
 
-    pagefile_state = malloc(sizeof(UCHAR) * num_pagefile_blocks);
-    pagefile_contents = malloc(PAGE_SIZE * num_pagefile_blocks);
+    pf.pagefile_state = malloc(sizeof(UCHAR) * num_pagefile_blocks);
+    pf.pagefile_contents = malloc(PAGE_SIZE * num_pagefile_blocks);
 
     for (unsigned i = 0; i < num_pagefile_blocks; i++) {
-        pagefile_state[i] = 0;
+        pf.pagefile_state[i] = 0;
     }
 
     for (unsigned i = 0; i < num_pagefile_blocks * PAGE_SIZE; i++) {
-        pagefile_contents[i] = '\0';
+        pf.pagefile_contents[i] = '\0';
     }
+
+    pf.free_pagefile_blocks = num_pagefile_blocks;
 
     InitializeCriticalSection(&modified_list.list_lock);
 
@@ -114,6 +134,8 @@ void instantiateModifiedList() {
 // For removing page from freelist
 // CHANGED: listhead to page_t*
 page_t* popTailPage(page_t* listhead) {
+
+    debug_checks_list_counter(listhead);
 
     if (listhead->blink == listhead) {
         //printf("Empty - no pages (freelist)\n");
@@ -134,6 +156,8 @@ page_t* popTailPage(page_t* listhead) {
 // From TS
 page_t* popHeadPage(page_t* listhead) {
 
+    debug_checks_list_counter(listhead);
+
     if (listhead->flink == listhead) {
         //printf("Nothing to pop, the list is empty\n");
         return NULL;
@@ -141,19 +165,18 @@ page_t* popHeadPage(page_t* listhead) {
 
     // adjust links
     page_t* popped_page = (page_t*) listhead->flink;
-    listhead->flink = listhead->flink->flink;
+    listhead->flink = popped_page->flink;
     listhead->flink->blink = listhead;
     listhead->num_of_pages -= 1;
 
-    if (listhead == &standby_list) {
-        debug_checks_standby_counter();
-    }
 
     return popped_page;
 }
 
 
 void popFromAnywhere(page_t* listhead, page_t* given_page) {
+
+    debug_checks_list_counter(listhead);
 
     // Remember to remove this once we find the 
     // standby_list.num_pages bug
@@ -193,10 +216,6 @@ void popFromAnywhere(page_t* listhead, page_t* given_page) {
         listhead->num_of_pages -= 1;
     }
 
-    if (listhead == &standby_list) {
-        debug_checks_standby_counter();
-    }
-
     //return given_page;
 }
 
@@ -214,10 +233,6 @@ void addToHead(page_t* listhead, page_t* new_page) {
     new_page->blink = listhead;
     listhead->num_of_pages += 1;
 
-    if (listhead == &standby_list) {
-        debug_checks_standby_counter();
-    }
-
     if (listhead == &standby_list && new_page->pagefile_num == 0) {
         DebugBreak();
     }
@@ -230,11 +245,15 @@ void addToHead(page_t* listhead, page_t* new_page) {
         SetEvent(pages_available);
     }
 
+    debug_checks_list_counter(listhead);
+
     return;
 
 }
 
 void addToTail(page_t* listhead, page_t* new_page) {
+
+
     if (listhead == NULL) {
         printf("Given listhead is NULL (addToHead)\n");
         return;
@@ -246,10 +265,6 @@ void addToTail(page_t* listhead, page_t* new_page) {
     listhead->blink = new_page;
     listhead->num_of_pages += 1;
 
-    if (listhead == &standby_list) {
-        debug_checks_standby_counter();
-    }
-
     if (listhead == &standby_list && new_page->pagefile_num == 0) {
         DebugBreak();
     }
@@ -262,8 +277,11 @@ void addToTail(page_t* listhead, page_t* new_page) {
         SetEvent(pages_available);
     }
 
+    debug_checks_list_counter(listhead);
+
     return;
 }
+
 
 page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb) {
     if (pgtb == NULL || given_pfn == 0) {
@@ -285,21 +303,40 @@ ULONG64 page_to_pfn(page_t* given_page) {
 }
 
 
-VOID debug_checks_standby_counter() {
-    #if 0
+VOID debug_checks_list_counter(page_t* listhead) {
     // If not, debugbreak because flink should 
     // never equal blink if num_of_pages != 0;
 
+    DWORD curr_thread = GetCurrentThreadId();
+    if (curr_thread != (DWORD) (ULONG_PTR) listhead->list_lock.OwningThread) {
+        DebugBreak();
+    }
+
     unsigned count = 0;
 
-    page_t* curr_page = standby_list.flink;
-    while (curr_page != &standby_list) {
+    page_t* curr_page = listhead->flink;
+    while (curr_page != listhead) {
         count += 1;
+
+
+        if (listhead == &modified_list) {
+            if (curr_page->pagefile_num != 0) {
+                DebugBreak();
+            }
+        }
+
+
+        if (listhead == &standby_list) {
+            if (curr_page->pagefile_num == 0) {
+                DebugBreak();
+            }
+        }
+
+
         curr_page = curr_page->flink;
     }
 
-    if (count != standby_list.num_of_pages) {
+    if (count != listhead->num_of_pages) {
         DebugBreak();
     }
-    #endif
 }
