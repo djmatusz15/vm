@@ -1,5 +1,6 @@
 #include "list.h"
 #include "pagefile.h"
+#include "bitlock.h"
 
 #define PAGE_SIZE 4096
 #define NUM_PTE_REGIONS 128

@@ -2,7 +2,7 @@
  * Examples of creating locks using interlocked operations
  */
 
-#include <windows.h>
+#include "bitlock.h"
 
 long num_modified_pages;
 void trimmer() {
@@ -52,7 +52,7 @@ void trimmer() {
 }
 
 
-void acquire_lock(long* lock) {
+void acquireLock(volatile LONG* lock) {
     /**
      * 1 means the lock is owned
      */
@@ -92,30 +92,18 @@ void acquire_lock(long* lock) {
     
 }
 
-typedef struct {
-    /**
-     * This cannot be modified by anything except an Interlocked instruction
-     */
-    long lock_field;
-    long max_spincount;
-    HANDLE event_structure;
-} HEAVY_LOCK;
-
-void heavy_acquire_lock(HEAVY_LOCK* lock) {
-    /**
-     * 1 means the lock is owned
-     */
-    long new_val = 1;
+void releaseLock(volatile LONG* lock) {
 
     /**
      * 0 means the lock is not owned
      */
-    long old_val = 0;
+    long new_val = 0;
+
 
     /**
-     * The number of times that we have spun so far trying to acquire the lock
+     * 1 means the lock is owned
      */
-    long spin_count = 0;
+    long old_val = 1;
 
     /**
      * First parameter is our "lock field", or the one that we want to change
@@ -124,36 +112,23 @@ void heavy_acquire_lock(HEAVY_LOCK* lock) {
      * 
      * Third parameter is what the current value of the "lock field" must be in order to change the value. 
      * Otherwise, we fail and do not change the value at all
+     * 
+     * This is a CPU level instruction that keeps the "lock field" exclusive in the cache during that single instruction
+     * 
+     * This means that the given address cannot straddle two cache lines - as the CPU could end in deadlock
      */
     while (TRUE) {
         long real_old_value = InterlockedCompareExchange(lock, new_val, old_val);
 
-        if (real_old_value == 0) {
+        if (real_old_value == 1) {
             /**
-             * Succeeded, it was not owned, but now it is set to 1 and we own it
+             * Succeeded, it was not owned, but now it is set to 0 and we don't own it
              */
             break;
         }
 
         /**
-         * We have failed, we will increment the spin count
-         */
-        spin_count++;
-
-
-        /**
-         * If we have spun the maximum amount allowed, we put the thread to sleep and relinquish the CPU until
-         * we are signaled that the lock is free. We don't want to waste too much CPU time trying to acquire the lock
-         * and failing
-         */
-        if (spin_count == lock->max_spincount) {
-            WaitForSingleObject(lock->event_structure, INFINITE);
-            spin_count = 0;
-        }
-
-        /**
-         * Try again to acquire lock
+         * We have failed, we have to keep trying until we can set it to 0 at 121
          */
     }
-    
 }

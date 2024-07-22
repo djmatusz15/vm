@@ -17,6 +17,12 @@ typedef struct page {
     ULONG64 pagefile_num;
 
     CRITICAL_SECTION list_lock;
+
+    // DM: start working on the bitlock,
+    // first for the freelist, then modified
+    // and standby list
+
+    volatile LONG bitlock;
 } page_t;
 
 

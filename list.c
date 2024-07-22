@@ -11,7 +11,8 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
 
     InitializeCriticalSection(&freelist.list_lock);
 
-    EnterCriticalSection(&freelist.list_lock);
+    // EnterCriticalSection(&freelist.list_lock);
+    acquireLock(&freelist.bitlock);
 
     for (unsigned i = 0; i < num_physical_frames; i++) {
         page_t* new_page = page_create(base_pfn, physical_frame_numbers[i]);
@@ -25,7 +26,8 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
         addToHead(&freelist, new_page);
     } 
 
-    LeaveCriticalSection(&freelist.list_lock);
+    // LeaveCriticalSection(&freelist.list_lock);
+    releaseLock(&freelist.bitlock);
 }
 
 page_t* page_create(page_t* base, ULONG_PTR page_num) {
@@ -69,8 +71,7 @@ pagefile_t pf;
 
 
 // Create modified list
-// DM: Ask if virtualAlloc of the 
-// temp VAs here is screwing something up?
+
 void instantiateModifiedList() {
     modified_list.blink = &modified_list;
     modified_list.flink = &modified_list;
@@ -307,6 +308,8 @@ ULONG64 page_to_pfn(page_t* given_page) {
 VOID debug_checks_list_counter(page_t* listhead) {
     // If not, debugbreak because flink should 
     // never equal blink if num_of_pages != 0;
+
+    return;
 
     DWORD curr_thread = GetCurrentThreadId();
     if (curr_thread != (DWORD) (ULONG_PTR) listhead->list_lock.OwningThread) {
