@@ -132,3 +132,24 @@ void releaseLock(volatile LONG* lock) {
          */
     }
 }
+
+
+
+BOOL tryAcquireLock(volatile LONG* lock) {
+    long old_val = 0;
+    long new_val = 1;
+
+    long real_old_val = InterlockedCompareExchange(lock, new_val, old_val);
+
+    // If the old val was 0, then we successfully 
+    // switched the bit to 1, meaning we acquired the
+    // lock. Otherwise, return false.
+
+    if (real_old_val == 0) {
+        return TRUE;
+    }
+
+    else {
+        return FALSE;
+    }
+}

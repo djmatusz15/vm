@@ -9,7 +9,7 @@
 typedef struct page {
     struct page* flink;
     struct page* blink;
-    ULONG64 num_of_pages;
+    int num_of_pages;
     PTE* pte;
 
     // Find where the page was stored on disk

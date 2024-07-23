@@ -13,15 +13,22 @@
 LPTHREAD_START_ROUTINE handle_trimming() {
 
     ULONG64 ptes_per_region = pgtb->num_ptes / NUM_PTE_REGIONS;
-    unsigned trimmed_pages_count = 0;
+    page_t** batched_pages;
+    unsigned int batched_pages_count;
+
+
+    batched_pages = malloc(sizeof(page_t*) * BATCH_SIZE);
+
 
     while (1) {
+
         WaitForSingleObject(trim_now, INFINITE);
         ULONG64 count;
         ULONG64 region;
         PTE* curr_pte;
         BOOL trimmed_enough = FALSE;
         unsigned i;
+
 
         for (i = 0; i < NUM_PTE_REGIONS; i++) {
             
@@ -39,187 +46,49 @@ LPTHREAD_START_ROUTINE handle_trimming() {
 
                     curr_pte = &pgtb->pte_array[count];
 
-                    PTE local_contents;
-                    local_contents.entire_format = 0;
-
-                    // Set the PTE so the its modified
-                    local_contents.transition_format.valid = 0;
-                    local_contents.transition_format.in_memory = 1;
-                    local_contents.transition_format.frame_number = curr_pte->memory_format.frame_number;
-
 
                     page_t* curr_page = pfn_to_page(curr_pte->memory_format.frame_number, pgtb);
-                    if (curr_page->pagefile_num != 0) {
-                        DebugBreak();
-                    }
-
-                    WriteToPTE(curr_pte, local_contents);
-
-                    PULONG_PTR conv_va = pte_to_va(curr_pte, pgtb);
+                    // if (curr_page->pagefile_num != 0) {
+                    //     DebugBreak();
+                    // }
 
 
-                    if (MapUserPhysicalPages(conv_va, 1, NULL) == FALSE) {
-                        DebugBreak();
-                        printf("Couldn't unmap VA %p (handle_trimming)\n", conv_va);
-                        return NULL;
-                    }
+                    batched_pages[batched_pages_count] = curr_page;
 
 
-                    // Was originally above the Mapping. If this was the
-                    // case, we would have left the standby lock, and someone
-                    // else could have swept in and took it before we unmapped it
+                    batched_pages_count++;
 
-                    // EnterCriticalSection(&modified_list.list_lock);
-                    acquireLock(&modified_list.bitlock);
-
-                    addToHead(&modified_list, curr_page);
-
-                    //LeaveCriticalSection(&modified_list.list_lock);
-                    releaseLock(&modified_list.bitlock);
-
-
-                    SetEvent(modified_list_notempty);
-
-                    
-                    if ((standby_list.num_of_pages + modified_list.num_of_pages) > (2 * (pgtb->num_ptes)) / 7) {
-                        trimmed_enough = TRUE;
+                    if (batched_pages_count == BATCH_SIZE) {
                         break;
                     }
 
-                    trimmed_pages_count++;
                 }
             }
+
+            if (batched_pages_count != 0) {
+                write_ptes_to_modified(batched_pages, batched_pages_count);
+                unmap_batch(batched_pages, batched_pages_count);
+                add_pages_to_modified(batched_pages, batched_pages_count);
+                // printf("%d\n", batched_pages_count);
+                batched_pages_count = 0;
+            }
+
             
             UnlockPagetable(i);
         }
 
         if (i == NUM_PTE_REGIONS) {
-            //printf("Didn't fill enough: %d\n", trimmed_pages_count);
             continue;
         }
+
+
     }
 }
 
 
 
-#define FREE 0
-#define IN_USE 1
 
-LPTHREAD_START_ROUTINE handle_modifying() {
-
-
-    // DM: Keep array to write as a batch to
-    // MapUserPhysicalPages. In the for loop,
-    // pop each page from modified and plug it.
-    // Just keep it as pages, not VAs
-
-
-    page_t** batched_pages;
-
-    batched_pages = malloc(sizeof(page_t*) * BATCH_SIZE);
-
-
-     while (1) {
-
-        // Don't try to batch until you have at
-        // least 8 pages on the modified list and
-        // 8 free spots on the disk
-
-        // if (modified_list.num_of_pages <= BATCH_SIZE || pf.free_pagefile_blocks <= BATCH_SIZE) {
-        //     continue;
-        // }
-
-
-        // EnterCriticalSection(&modified_list.list_lock);
-        acquireLock(&modified_list.bitlock);
-
-        // Check again to make sure that we have 
-        // 8 pages or more on the modified list
-        // and 8 free spots on the disk 
-        
-        if (modified_list.num_of_pages <= BATCH_SIZE || pf.free_pagefile_blocks <= BATCH_SIZE) {
-            // LeaveCriticalSection(&modified_list.list_lock);
-            releaseLock(&modified_list.bitlock);
-            continue;
-        }
-
-
-        // If this is still true, debug break
-
-        if (modified_list.num_of_pages <= BATCH_SIZE || pf.free_pagefile_blocks <= BATCH_SIZE) {
-            DebugBreak();
-        }
-
-
-        // Leave out first disk space so that 
-        // there are no collisions with frame numbers
-        // in valid or transition PTEs; no ambiguity
-
-        unsigned i;
-        // unsigned blocks_taken = 0;
-        for (i = 1 ; i < num_pagefile_blocks; i++) {
-
-
-            // DM: Find a chunk of 8 pagefile slots
-            // that are free
-
-            unsigned check_if_free = i;
-            unsigned last_free_block = i + 8;
-            while (check_if_free < last_free_block) {
-                if (pf.pagefile_state[check_if_free] == IN_USE) {
-                    break;
-                }
-                check_if_free++;
-            }
-
-            // If we didn't find 8 free blocks, continue
-            // do next for loop iteration
-
-            if (check_if_free != last_free_block) {
-                continue;
-            }
-
-            // if we made it, break out of the for loop
-            break;
-
-        }
-
-        for (unsigned j = 0; j < BATCH_SIZE; j++) {
-
-            page_t* curr_page = popHeadPage(&modified_list);
-
-            if (curr_page == NULL) {
-                printf("Page corrupted or mod list NULL\n");
-                DebugBreak();
-                // LeaveCriticalSection(&modified_list.list_lock);
-                releaseLock(&modified_list.bitlock);
-                return NULL;
-            }
-
-            batched_pages[j] = curr_page;
-
-        }
-
-        // Use i to know where to start mapping to on the pagefile
-
-        BOOL mapped_batch_to_pagefile = map_batch_to_pagefile(batched_pages, i);
-        if (mapped_batch_to_pagefile == FALSE) {
-            printf("Mapping to temp VA didn't work\n");
-            DebugBreak();
-            return NULL;
-        }
-
-        // LeaveCriticalSection(&modified_list.list_lock);
-        releaseLock(&modified_list.bitlock);
-
-        SetEvent(pages_available);
-
-     }
-}
-
-
-
-# if 0
+// Dynamic batch size for the mod writer
 
 #define FREE 0
 #define IN_USE 1
@@ -248,24 +117,24 @@ LPTHREAD_START_ROUTINE handle_modifying() {
         // }
 
 
-        EnterCriticalSection(&modified_list.list_lock);
+        acquireLock(&modified_list.bitlock);
 
         // Wait for both modified pages and pagefile
         // blocks to be available
 
-        if (&modified_list.num_of_pages == 0) {
-            LeaveCriticalSection(&modified_list.list_lock);
+        if (modified_list.num_of_pages == 0) {
+            releaseLock(&modified_list.bitlock);
             WaitForSingleObject(modified_list_notempty, INFINITE);
             continue;
         }
 
         if (pf.free_pagefile_blocks == 0) {
-            LeaveCriticalSection(&modified_list.list_lock);
+            releaseLock(&modified_list.bitlock);
             WaitForSingleObject(pagefile_blocks_available, INFINITE);
             continue;
         }
 
-        if (&modified_list.num_of_pages == 0 || pf.free_pagefile_blocks == 0) {
+        if (modified_list.num_of_pages == 0 || pf.free_pagefile_blocks == 0) {
             DebugBreak();
 
         }
@@ -275,7 +144,7 @@ LPTHREAD_START_ROUTINE handle_modifying() {
         // there are no collisions with frame numbers
         // in valid or transition PTEs; no ambiguity
 
-        unsigned curr_batch_size = min(BATCH_SIZE, &modified_list.num_of_pages);
+        unsigned curr_batch_size = min(BATCH_SIZE, modified_list.num_of_pages);
         unsigned i;
         // unsigned blocks_taken = 0;
 
@@ -317,11 +186,19 @@ LPTHREAD_START_ROUTINE handle_modifying() {
         }
 
 
+        // If this is true, then we haven't found a chunk
+        // in the pagefile to fit our pages. Continue on with
+        // the loop and try again
+
+        if (curr_batch_end_index >= num_pagefile_blocks) {
+            continue;
+        }
+
+
         // Set the batch size dynamically to whatever we got,
         // and malloc for the batch array as well
 
         batched_pages = malloc(sizeof(page_t*) * curr_batch_size);
-
 
         for (unsigned j = 0; j < curr_batch_size; j++) {
 
@@ -330,7 +207,7 @@ LPTHREAD_START_ROUTINE handle_modifying() {
             if (curr_page == NULL) {
                 printf("Page corrupted or mod list NULL\n");
                 DebugBreak();
-                LeaveCriticalSection(&modified_list.list_lock);
+                releaseLock(&modified_list.bitlock);
                 return NULL;
             }
 
@@ -347,7 +224,7 @@ LPTHREAD_START_ROUTINE handle_modifying() {
             return NULL;
         }
 
-        LeaveCriticalSection(&modified_list.list_lock);
+        releaseLock(&modified_list.bitlock);
 
         SetEvent(pages_available);
 
@@ -355,7 +232,7 @@ LPTHREAD_START_ROUTINE handle_modifying() {
 }
 
 
-#endif
+// #endif
 
 
 
@@ -658,70 +535,12 @@ BOOL map_to_pagefile(page_t* curr_page, unsigned pagefile_slot) {
 }
 
 
-BOOL map_batch_to_pagefile(page_t** batched_pages, unsigned pagefile_slot) {
 
-    // Get array of pfns, map array to temp VA, memcpy then unmap.
-    // Don't forget to change size from 1 pages to 8!
-
-    ULONG64* batched_pfns;
-
-    batched_pfns = malloc(sizeof(ULONG64) * BATCH_SIZE);
-
-    for (unsigned i = 0; i < BATCH_SIZE; i++) {
-        ULONG64 curr_pfn = page_to_pfn(batched_pages[i]);
-        batched_pfns[i] = curr_pfn;
-    }
-
-    if (MapUserPhysicalPages (modified_page_va, BATCH_SIZE, batched_pfns) == FALSE) {
-
-        // LeaveCriticalSection(&modified_list.list_lock);
-        releaseLock(&modified_list.bitlock);
-        printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", modified_page_va, batched_pfns);
-        DebugBreak();
-
-        return FALSE;
-
-    }
-
-    memcpy(&pf.pagefile_contents[pagefile_slot * PAGE_SIZE], modified_page_va, BATCH_SIZE * PAGE_SIZE);
-
-
-    if (MapUserPhysicalPages (modified_page_va, BATCH_SIZE, NULL) == FALSE) {
-
-        // LeaveCriticalSection(&modified_list.list_lock);
-        releaseLock(&modified_list.bitlock);
-        printf ("full_virtual_memory_test : could not unmap VA %p\n", modified_page_va);
-        DebugBreak();
-
-        return FALSE;
-
-    }
-
-
-    // Add the pages to standby
-    // EnterCriticalSection(&standby_list.list_lock);
-    acquireLock(&standby_list.bitlock);
-
-    for (unsigned i = 0; i < BATCH_SIZE; i++) {
-
-        batched_pages[i]->pagefile_num = pagefile_slot + i;
-        addToHead(&standby_list, batched_pages[i]);
-
-    }
-
-    // LeaveCriticalSection(&standby_list.list_lock);
-    releaseLock(&standby_list.bitlock);
-
-    return TRUE;
-}
-
-
-#if 0
+// #if 0
 
 BOOL map_batch_to_pagefile(page_t** batched_pages, unsigned pagefile_slot, unsigned curr_batch_size) {
 
     // Get array of pfns, map array to temp VA, memcpy then unmap.
-    // Don't forget to change size from 1 pages to 8!
 
     ULONG64* batched_pfns;
 
@@ -734,7 +553,7 @@ BOOL map_batch_to_pagefile(page_t** batched_pages, unsigned pagefile_slot, unsig
 
     if (MapUserPhysicalPages (modified_page_va, curr_batch_size, batched_pfns) == FALSE) {
 
-        LeaveCriticalSection(&modified_list.list_lock);
+        releaseLock(&modified_list.bitlock);
         printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", modified_page_va, batched_pfns);
         DebugBreak();
 
@@ -747,7 +566,7 @@ BOOL map_batch_to_pagefile(page_t** batched_pages, unsigned pagefile_slot, unsig
 
     if (MapUserPhysicalPages (modified_page_va, curr_batch_size, NULL) == FALSE) {
 
-        LeaveCriticalSection(&modified_list.list_lock);
+        releaseLock(&modified_list.bitlock);
         printf ("full_virtual_memory_test : could not unmap VA %p\n", modified_page_va);
         DebugBreak();
 
@@ -757,7 +576,7 @@ BOOL map_batch_to_pagefile(page_t** batched_pages, unsigned pagefile_slot, unsig
 
 
     // Add the pages to standby
-    EnterCriticalSection(&standby_list.list_lock);
+    acquireLock(&standby_list.bitlock);
 
     for (unsigned i = 0; i < curr_batch_size; i++) {
 
@@ -766,9 +585,62 @@ BOOL map_batch_to_pagefile(page_t** batched_pages, unsigned pagefile_slot, unsig
 
     }
 
-    LeaveCriticalSection(&standby_list.list_lock);
+    releaseLock(&standby_list.bitlock);
 
     return TRUE;
 }
 
-#endif
+// #endif
+
+
+void unmap_batch (page_t** batched_pages, unsigned int curr_batch_size) {
+
+    PULONG_PTR* batched_vas = malloc(sizeof(PULONG_PTR) * curr_batch_size);
+
+    for (unsigned i = 0; i < curr_batch_size; i++) {
+        PULONG_PTR curr_va = pte_to_va(batched_pages[i]->pte, pgtb);
+        batched_vas[i] = curr_va;
+    }
+
+    if (MapUserPhysicalPagesScatter(batched_vas, curr_batch_size, NULL) == FALSE) {
+        printf("Could not unmap batch for trimmer\n");
+        // UnlockPagetable();
+        DebugBreak();
+    }
+
+}
+
+
+void write_ptes_to_modified(page_t** batched_pages, unsigned int curr_batch_size) {
+
+    for (unsigned i = 0; i < curr_batch_size; i++) {
+
+        PTE* curr_pte = batched_pages[i]->pte;
+
+        PTE local_contents;
+        local_contents.entire_format = 0;
+
+        // Set the PTE so the its modified
+        local_contents.transition_format.valid = 0;
+        local_contents.transition_format.in_memory = 1;
+        local_contents.transition_format.frame_number = curr_pte->memory_format.frame_number;
+
+        WriteToPTE(curr_pte, local_contents);
+
+    }
+}
+
+
+
+void add_pages_to_modified(page_t** batched_pages, unsigned int curr_batch_size) {
+
+    acquireLock(&modified_list.bitlock);
+
+    for (unsigned i = 0; i < curr_batch_size; i++) {
+        addToHead(&modified_list, batched_pages[i]);
+    }
+
+    releaseLock(&modified_list.bitlock);
+
+    SetEvent(modified_list_notempty);
+}

@@ -66,8 +66,8 @@ PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
 ULONG64 va_to_pte_index(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb) {
 
     if (arbitrary_va == NULL) {
-        DebugBreak();
         printf("Given VA is NULL (va_to_pte_index)\n");
+        DebugBreak();
         return -1;
     }
 
@@ -84,8 +84,8 @@ ULONG64 va_to_pte_index(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb) {
 
 PULONG_PTR pte_to_va(PTE* pte, PAGE_TABLE* pgtb) {
     if (pte == NULL) {
-        DebugBreak();
         printf("Given pagetable and/or PTE is NULL\n");
+        DebugBreak();
         return NULL;
     }
 

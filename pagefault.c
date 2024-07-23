@@ -297,6 +297,16 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     curr_page->pte = curr_pte;
 
     if (on_standby == TRUE) {
+
+        /*
+            DM: Since we already have the standby list
+            lock, we should try and zero out pages and 
+            put them back on the freelist. This will
+            reduce our contention on this lock, and 
+            spread it out towards the freelist
+        */
+
+
         // LeaveCriticalSection(&standby_list.list_lock);
         releaseLock(&standby_list.bitlock);
     }
