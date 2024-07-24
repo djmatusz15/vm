@@ -3,20 +3,21 @@
 #include "bitlock.h"
 
 #define PAGE_SIZE 4096
-#define NUM_PTE_REGIONS  128    // 128
-#define PTES_PER_REGION 32      // 32
-#define BATCH_SIZE 16       // switch back to 16
-
-// #define NUM_PTE_REGIONS 1
-// #define PTES_PER_REGION 4096
+#define NUM_PTE_REGIONS  2048    // 2048
+#define PTES_PER_REGION 128     // 128
+#define BATCH_SIZE 32       // 32
 
 #define MB(x)                       ((x) * 1024 * 1024)
 #define GB(x)                       ((x) * 1024 * 1024 * 1024)
 
-#define VIRTUAL_ADDRESS_SIZE        MB(16)
-#define NUMBER_OF_PHYSICAL_PAGES   ((VIRTUAL_ADDRESS_SIZE / PAGE_SIZE) / 64)    // 64
+#define VIRTUAL_ADDRESS_SIZE        MB(128)          // 128
+#define NUMBER_OF_PHYSICAL_PAGES   ((VIRTUAL_ADDRESS_SIZE / PAGE_SIZE) / 4)    // 8
 
-#define NUM_OF_THREADS             5
+// This is 8192 pages right now
+
+
+#define NUM_OF_THREADS             19
+#define NUM_OF_FAULTING_THREADS     NUM_OF_THREADS - 3
 
 #define SUPPORT_MULTIPLE_VA_TO_SAME_PAGE 1
 
@@ -30,6 +31,7 @@ extern page_t* base_pfn;
 extern page_t freelist;
 extern page_t modified_list;
 extern page_t standby_list;
+extern page_t zero_list;
 
 // Disk space
 // extern PUCHAR pagefile_contents;

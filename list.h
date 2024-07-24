@@ -37,6 +37,7 @@ typedef struct page {
 void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn);
 void instantiateStandyList();
 void instantiateModifiedList();
+void instantiateZeroList();
 page_t* page_create(page_t* base, ULONG_PTR page_num);
 page_t* popTailPage(page_t* listhead);
 page_t* popHeadPage(page_t* listhead);

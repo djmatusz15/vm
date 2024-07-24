@@ -325,25 +325,23 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID mod
 
     PULONG_PTR arbitrary_va = pte_to_va(curr_pte, pgtb);
 
-    // EnterCriticalSection(&freelist.list_lock);
+
     acquireLock(&freelist.bitlock);
 
+
     repurposed_page = popHeadPage(&freelist);
+
 
     if (repurposed_page == NULL) {
         on_standby = TRUE;
 
-        // LeaveCriticalSection(&freelist.list_lock);
         releaseLock(&freelist.bitlock);
 
-        // EnterCriticalSection(&standby_list.list_lock);
         acquireLock(&standby_list.bitlock);
 
         repurposed_page = recycleOldestPage(pte_region_index_for_lock);
         if (repurposed_page == NULL) {
-            //printf("Couldn't get oldest page\n");
 
-            //LeaveCriticalSection(&standby_list.list_lock);
             releaseLock(&standby_list.bitlock);
 
             // No pages left, maybe trigger the trim event now.
@@ -361,11 +359,9 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID mod
     if (MapUserPhysicalPages (modified_page_va2, 1, &conv_page_num) == FALSE) {
         
         if (on_standby == TRUE) {
-            // LeaveCriticalSection(&standby_list.list_lock);
             releaseLock(&standby_list.bitlock);
         }
         else {
-            // LeaveCriticalSection(&freelist.list_lock);
             releaseLock(&freelist.bitlock);
         }
 
@@ -380,11 +376,9 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID mod
     if (MapUserPhysicalPages (modified_page_va2, 1, NULL) == FALSE) {
 
         if (on_standby == TRUE) {
-            // LeaveCriticalSection(&standby_list.list_lock);
             releaseLock(&standby_list.bitlock);
         }
         else {
-            // LeaveCriticalSection(&freelist.list_lock);
             releaseLock(&freelist.bitlock);
         }
 
@@ -416,11 +410,9 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID mod
     if (MapUserPhysicalPages (arbitrary_va, 1, &new_mapping) == FALSE) {
         
         if (on_standby == TRUE) {
-            // LeaveCriticalSection(&standby_list.list_lock);
             releaseLock(&standby_list.bitlock);
         }
         else {
-            // LeaveCriticalSection(&freelist.list_lock);
             releaseLock(&freelist.bitlock);
         }
 
@@ -431,11 +423,48 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID mod
 
 
     if (on_standby == TRUE) {
-        // LeaveCriticalSection(&standby_list.list_lock);
+
+        // DM: While I have the standby list lock,
+        // I should free up some pages and move them
+        // to the freelist/zero list. This way, 
+        // contention will be relieved on the standby
+        // list lock. Should just pop a few of the oldest
+        // pages from the tail of standby, zero them out
+        // with memset(0) and move them to zero list
+
+        unsigned int num_pages_on_standby = standby_list.num_of_pages;
+
+        // Move a quarter of the pages on standby to 
+        unsigned int num_to_move_to_freelist = num_pages_on_standby / 4;
+
+
+        acquireLock(&freelist.bitlock);
+
+        for (unsigned i = 0; i < num_to_move_to_freelist; i++) {
+            page_t* curr_page = recycleOldestPage(pte_region_index_for_lock);
+
+            if (curr_page == NULL) {
+                break;
+            }
+
+            PTE local_contents;
+            local_contents.entire_format = 0;
+            WriteToPTE(curr_page->pte, local_contents);
+
+            // memset(page_to_pfn(curr_page), 0, PAGE_SIZE);
+
+            addToHead(&freelist, curr_page);
+            
+        }
+
+        releaseLock(&freelist.bitlock);
+
+
         releaseLock(&standby_list.bitlock);
+
+
     }
     else {
-        // LeaveCriticalSection(&freelist.list_lock);
         releaseLock(&freelist.bitlock);
     }
 
@@ -444,13 +473,11 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID mod
     // thread knows there's a free slot on
     // the disk open again
 
-    // EnterCriticalSection(&modified_list.list_lock);
     acquireLock(&modified_list.bitlock);
 
     pf.pagefile_state[curr_pte_pagefile_num] = 0;
     pf.free_pagefile_blocks++;
 
-    // LeaveCriticalSection(&modified_list.list_lock);
     releaseLock(&modified_list.bitlock);
 
 
@@ -524,8 +551,6 @@ page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
         //printf ("full_virtual_memory_test : could not unmap VA (handle_new_pte)\n");
     }
 
-
-    // DM: ABBA lock problem. This is just a band-aid
 
     PTE local_contents;
     local_contents.entire_format = 0;

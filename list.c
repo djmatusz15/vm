@@ -11,7 +11,6 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
 
     InitializeCriticalSection(&freelist.list_lock);
 
-    // EnterCriticalSection(&freelist.list_lock);
     acquireLock(&freelist.bitlock);
 
     for (unsigned i = 0; i < num_physical_frames; i++) {
@@ -20,13 +19,10 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
             printf("Couldn't create new page\n");
         }
 
-        // DM: Starting to implement page locks
-        // InitializeCriticalSection(&new_page->list_lock);
 
         addToHead(&freelist, new_page);
     } 
 
-    // LeaveCriticalSection(&freelist.list_lock);
     releaseLock(&freelist.bitlock);
 }
 
@@ -131,6 +127,20 @@ void instantiateModifiedList() {
 
     return;
 }
+
+
+
+// Create zeroed list
+void instantiateZeroList() {
+    zero_list.blink = &zero_list;
+    zero_list.flink = &zero_list;
+    zero_list.num_of_pages = 0;
+
+
+    InitializeCriticalSection(&zero_list.list_lock);
+
+}
+
 
 
 // For removing page from freelist
@@ -306,8 +316,11 @@ ULONG64 page_to_pfn(page_t* given_page) {
 
 
 VOID debug_checks_list_counter(page_t* listhead) {
-    // If not, debugbreak because flink should 
-    // never equal blink if num_of_pages != 0;
+    
+    // NOT IN USE: after the switch to the bitlock,
+    // this debug checker for list count became 
+    // redundant, since it doesn't keep track of
+    // the owning thread. 
 
     return;
 

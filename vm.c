@@ -6,6 +6,7 @@
 #include "pagefault.h"
 #include "threads.h"
 #include "globals.h"
+#include <time.h>
 #pragma comment(lib, "advapi32.lib")
 
 #define PAGE_SIZE                   4096
@@ -316,6 +317,7 @@ ULONG_PTR virtual_address_size;
 page_t freelist;
 page_t standby_list;
 page_t modified_list;
+page_t zero_list;
 PVOID p;
 page_t* base_pfn;
 HANDLE trim_now;
@@ -344,6 +346,7 @@ full_virtual_memory_test (
     ULONG_PTR physical_page_count;
     PULONG_PTR physical_page_numbers;
     ULONG_PTR virtual_address_size_in_unsigned_chunks;
+    clock_t start_t, end_t;
 
     //
     // Allocate the physical pages that we will be managing.
@@ -352,6 +355,8 @@ full_virtual_memory_test (
     // is typically something the operating system reserves the sole
     // right to do.
     //
+
+    start_t = clock();
 
     privilege = GetPrivilege ();
 
@@ -417,7 +422,7 @@ full_virtual_memory_test (
 
 
     // #if 0
-    virtual_address_size = 64 * physical_page_count * PAGE_SIZE;
+    virtual_address_size = 32 * NUMBER_OF_PHYSICAL_PAGES * PAGE_SIZE;
 
     //
     // Round down to a PAGE_SIZE boundary.
@@ -430,7 +435,9 @@ full_virtual_memory_test (
     // +2 is because we save PTE bits;
     // don't use the first pagefile block of i = 0
     // so that we can lose a pagefile block instead of 
-    // using a precious PTE bit. We do +2 
+    // using a precious PTE bit. 
+
+    // DM: Why +2 again?
 
     num_pagefile_blocks = (virtual_address_size / PAGE_SIZE) - physical_page_count + 2;
 
@@ -505,17 +512,38 @@ full_virtual_memory_test (
     instantiateFreeList(physical_page_numbers, physical_page_count, base_pfn);
     instantiateStandyList();
     instantiateModifiedList();
+    instantiateZeroList();
     HANDLE* thread_handles = initialize_threads();
 
 
     WaitForSingleObject(thread_handles[3], INFINITE);
     WaitForSingleObject(thread_handles[4], INFINITE);
+    WaitForSingleObject(thread_handles[5], INFINITE);
+    WaitForSingleObject(thread_handles[6], INFINITE);
+    WaitForSingleObject(thread_handles[7], INFINITE);
+    WaitForSingleObject(thread_handles[8], INFINITE);
+    WaitForSingleObject(thread_handles[9], INFINITE);
+    WaitForSingleObject(thread_handles[10], INFINITE);
+    WaitForSingleObject(thread_handles[11], INFINITE);
+    WaitForSingleObject(thread_handles[12], INFINITE);
+    WaitForSingleObject(thread_handles[13], INFINITE);
+    WaitForSingleObject(thread_handles[14], INFINITE);
+    WaitForSingleObject(thread_handles[15], INFINITE);
+    WaitForSingleObject(thread_handles[16], INFINITE);
+    WaitForSingleObject(thread_handles[17], INFINITE);
+    WaitForSingleObject(thread_handles[18], INFINITE);
+    // WaitForMultipleObjects(NUM_OF_FAULTING_THREADS, &thread_handles[3], TRUE, INFINITE);
 
 
     // SetEvent(global_exit_event);
     
 
     printf ("full_virtual_memory_test : finished accessing random virtual addresses\n");
+
+    end_t = clock();
+    double total_time =  ((double) (end_t - start_t)) / CLOCKS_PER_SEC;
+
+    printf("Total CPU time used: %.5f\n", total_time);
 
     //
     // Now that we're done with our memory we can be a good

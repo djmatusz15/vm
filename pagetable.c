@@ -1,12 +1,13 @@
 #define PAGE_EXP_KB                  12 
-#define PAGE_SIZE                   (1 << PAGE_EXP_KB)
-#define CONV_INDEX_ADDR(x) (x & ~(PAGE_SIZE - 1))
+#define PAGE_SIZE_CONV               (1 << PAGE_EXP_KB)
+#define CONV_INDEX_ADDR(x) (x & ~(PAGE_SIZE_CONV - 1))
 #define CONV_INDEX_NUM(x) ((x) >> PAGE_EXP_KB)
 
-#define NUM_PTE_REGIONS 128
+
 #define MAX_AGE 8
 
 #include "pagetable.h"
+#include "globals.h"
 
 PAGE_TABLE* instantiatePagetable(ULONG64 nums_VAs, page_t* base_pfn) {
 
@@ -94,7 +95,7 @@ PULONG_PTR pte_to_va(PTE* pte, PAGE_TABLE* pgtb) {
 
     ULONG64 pte_index = (pte_address - base_address_pte_list) / sizeof(PTE);
 
-    PULONG_PTR virtual_address = (PULONG_PTR) ((ULONG_PTR)p + (pte_index * PAGE_SIZE));
+    PULONG_PTR virtual_address = (PULONG_PTR) ((ULONG_PTR)p + (pte_index * PAGE_SIZE_CONV));
 
     return virtual_address;
 

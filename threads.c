@@ -116,6 +116,8 @@ LPTHREAD_START_ROUTINE handle_modifying() {
         //     continue;
         // }
 
+        WaitForSingleObject(modified_list_notempty, INFINITE);
+
 
         acquireLock(&modified_list.bitlock);
 
@@ -124,7 +126,7 @@ LPTHREAD_START_ROUTINE handle_modifying() {
 
         if (modified_list.num_of_pages == 0) {
             releaseLock(&modified_list.bitlock);
-            WaitForSingleObject(modified_list_notempty, INFINITE);
+            //WaitForSingleObject(modified_list_notempty, INFINITE);
             continue;
         }
 
@@ -293,7 +295,7 @@ LPTHREAD_START_ROUTINE handle_faulting() {
 
 
 
-    virtual_address_size = 64 * NUMBER_OF_PHYSICAL_PAGES * PAGE_SIZE;
+    virtual_address_size = 32 * NUMBER_OF_PHYSICAL_PAGES * PAGE_SIZE;
 
     //
     // Round down to a PAGE_SIZE boundary.
@@ -349,7 +351,7 @@ LPTHREAD_START_ROUTINE handle_faulting() {
 
     #endif
 
-    for (j = 0; j < MB (1); j += 1) {
+    for (j = 0; j < (MB (1) / (NUM_OF_FAULTING_THREADS)); j += 1) {
 
         // Trigger events:
         // 1) Have an aging event every 32nd random access
@@ -426,6 +428,20 @@ HANDLE* initialize_threads(VOID)
     threads[2] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_modifying, NULL, 0, NULL);
     threads[3] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
     threads[4] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[5] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[6] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[7] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[8] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[9] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[10] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[11] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[12] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[13] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[14] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[15] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[16] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[17] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
+    threads[18] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) handle_faulting, NULL, 0, NULL);
 
     return threads;
 }
@@ -642,5 +658,9 @@ void add_pages_to_modified(page_t** batched_pages, unsigned int curr_batch_size)
 
     releaseLock(&modified_list.bitlock);
 
-    SetEvent(modified_list_notempty);
+    // SetEvent(modified_list_notempty);
+
+    if (modified_list.num_of_pages >= 8) {
+        SetEvent(modified_list_notempty);
+    }
 }
