@@ -18,11 +18,28 @@ typedef struct page {
 
     CRITICAL_SECTION list_lock;
 
-    // DM: start working on the bitlock,
-    // first for the freelist, then modified
-    // and standby list
+    // Bitlock, for when we get
+    // comfortable enough to not
+    // need debugging help of
+    // CRITICAL_SECTION
 
     volatile LONG bitlock;
+
+    // Only used for the freelists
+
+    page_t* freelists;
+    unsigned int is_freelist;
+
+
+    // Used for reference counting,
+    // rescuing pages in flight
+
+    unsigned int in_flight;
+    unsigned int was_rescued;
+
+    // Used for page read/write privileges
+    unsigned int read;
+    unsigned int write;
 } page_t;
 
 

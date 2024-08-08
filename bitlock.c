@@ -153,3 +153,75 @@ BOOL tryAcquireLock(volatile LONG* lock) {
         return FALSE;
     }
 }
+
+// Will get some random freelist lock, for when 
+// we need some arbitrary freelist page
+
+int acquireRandomFreelistLock() {
+
+    if (freelist.num_of_pages == 0) {
+        return -1;
+    }
+
+
+
+    while (TRUE) {
+
+        // Return -1 if 0 pages on freelist
+
+        if (freelist.num_of_pages == 0) {
+            return -1;
+        }
+
+
+        for (unsigned i = 0; i < NUM_FREELISTS; i++) {
+            
+
+            // If the number of pages on this freelist is 0,
+            // don't even bother and continue to next freelist
+
+            if (freelist.freelists[i].num_of_pages == 0) {
+                continue;
+            }
+
+            // Else, try and get the lock for this freelist
+
+            if (TryEnterCriticalSection(&freelist.freelists[i].list_lock) == TRUE) {
+
+                // If you get the lock, make sure there are still
+                // pages on this freelist, since it could have changed
+                // between the time you last checked and when you got
+                // the lock. If it changed to 0, drop lock and keep trying
+
+                if (freelist.num_of_pages <= 0) {
+                    LeaveCriticalSection(&freelist.freelists[i].list_lock);
+                    continue;
+                }
+
+
+
+                // DM: Fix to <= 0
+                if (freelist.freelists[i].flink == &freelist.freelists[i]) {
+                    //DebugBreak();
+                    LeaveCriticalSection(&freelist.freelists[i].list_lock);
+                    continue;
+                }
+
+                // Once we get here, we are guaranteed to have gotten
+                // the lock to this freelist and that it has at least 
+                // 1 page on it. Return the index so we can drop the
+                // lock in the parent once we're done.
+
+                if ((DWORD)freelist.freelists[i].list_lock.OwningThread != GetCurrentThreadId()) {
+                    DebugBreak();
+                }
+
+                return i;
+
+
+            }
+
+        }
+
+    }
+}

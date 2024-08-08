@@ -1,9 +1,71 @@
-#define NUM_FREE_LISTS 16
 #define PAGE_SIZE 4096
 
 #include "list.h"
 
 HANDLE trim_now;
+
+#if SUPPORT_MULTIPLE_FREELISTS
+
+void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn) {
+
+    freelist.freelists = (page_t*)malloc(sizeof(page_t) * NUM_FREELISTS);
+
+    if (freelist.freelists == NULL) {
+        printf("Couldn't malloc memory for freelists\n");
+        DebugBreak();
+        return;
+    }
+
+    // Initialize each freelist
+
+    for (unsigned i = 0; i < NUM_FREELISTS; i++) {
+
+        InitializeCriticalSection(&freelist.freelists[i].list_lock);
+
+        EnterCriticalSection(&freelist.freelists[i].list_lock);
+
+        freelist.freelists[i].blink = &freelist.freelists[i];
+        freelist.freelists[i].flink = &freelist.freelists[i];
+
+        freelist.freelists[i].num_of_pages = 0;
+        freelist.freelists[i].is_freelist = 1;
+
+        LeaveCriticalSection(&freelist.freelists[i].list_lock);
+    }
+
+
+
+    // Add physical frame and its page to respective freelist
+
+    for (unsigned i = 0; i < num_physical_frames; i++) {
+
+        page_t* new_page = page_create(base_pfn, physical_frame_numbers[i]);
+        if (new_page == NULL) {
+            printf("Couldn't create new page\n");
+            DebugBreak();
+        }
+
+        unsigned int freelist_to_add_frame_to = page_to_pfn(new_page) % NUM_FREELISTS;
+
+        EnterCriticalSection(&freelist.freelists[freelist_to_add_frame_to].list_lock);
+
+        addToHead(&freelist.freelists[freelist_to_add_frame_to], new_page);
+
+        LeaveCriticalSection(&freelist.freelists[freelist_to_add_frame_to].list_lock);
+
+
+    } 
+
+    // for (unsigned int i = 0; i < NUM_FREELISTS; i++) {
+    //     printf("Freelist %d count: %d\n", i, freelist.freelists[i].num_of_pages);
+    // }
+
+
+
+}
+
+#else
+
 
 void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn) {
     freelist.blink = &freelist;
@@ -11,7 +73,8 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
 
     InitializeCriticalSection(&freelist.list_lock);
 
-    acquireLock(&freelist.bitlock);
+    //acquireLock(&freelist.bitlock);
+    EnterCriticalSection(&freelist.list_lock);
 
     for (unsigned i = 0; i < num_physical_frames; i++) {
         page_t* new_page = page_create(base_pfn, physical_frame_numbers[i]);
@@ -23,8 +86,13 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
         addToHead(&freelist, new_page);
     } 
 
-    releaseLock(&freelist.bitlock);
+    //releaseLock(&freelist.bitlock);
+    LeaveCriticalSection(&freelist.list_lock);
 }
+
+
+#endif
+
 
 page_t* page_create(page_t* base, ULONG_PTR page_num) {
     page_t* new_page = base + page_num;
@@ -50,6 +118,8 @@ void instantiateStandyList () {
     standby_list.flink = &standby_list;
     standby_list.num_of_pages = 0;
 
+    standby_list.is_freelist = 0;
+
     pages_available = CreateEvent(NULL, FALSE, FALSE, NULL);
 
     InitializeCriticalSection(&standby_list.list_lock);
@@ -72,6 +142,8 @@ void instantiateModifiedList() {
     modified_list.blink = &modified_list;
     modified_list.flink = &modified_list;
     modified_list.num_of_pages = 0;
+
+    modified_list.is_freelist = 0;
 
     modified_list_notempty = CreateEvent(NULL, FALSE, FALSE, NULL);
     pagefile_blocks_available = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -136,6 +208,8 @@ void instantiateZeroList() {
     zero_list.flink = &zero_list;
     zero_list.num_of_pages = 0;
 
+    zero_list.is_freelist = 0;
+
 
     InitializeCriticalSection(&zero_list.list_lock);
 
@@ -161,6 +235,10 @@ page_t* popTailPage(page_t* listhead) {
     listhead->blink = tail->blink;
     listhead->num_of_pages -= 1;
 
+    if (listhead->is_freelist == 1) {
+        InterlockedDecrement(&freelist.num_of_pages);
+    }
+
     return tail;
 
 }
@@ -180,6 +258,10 @@ page_t* popHeadPage(page_t* listhead) {
     listhead->flink = popped_page->flink;
     listhead->flink->blink = listhead;
     listhead->num_of_pages -= 1;
+
+    if (listhead->is_freelist == 1) {
+        InterlockedDecrement(&freelist.num_of_pages);
+    }
 
 
     return popped_page;
@@ -226,6 +308,10 @@ void popFromAnywhere(page_t* listhead, page_t* given_page) {
         prev_page->flink = given_page->flink;
         given_page->flink->blink = prev_page;
         listhead->num_of_pages -= 1;
+
+        if (listhead->is_freelist == 1) {
+            InterlockedDecrement(&freelist.num_of_pages);
+        }
     }
 
     //return given_page;
@@ -239,11 +325,20 @@ void addToHead(page_t* listhead, page_t* new_page) {
         return;
     }
 
+    if (new_page == NULL) {
+        printf("Given page is NULL(addToHead)\n");
+        return;
+    }
+
     new_page->flink = listhead->flink;
     listhead->flink->blink = new_page;
     listhead->flink = new_page;
     new_page->blink = listhead;
     listhead->num_of_pages += 1;
+
+    if (listhead->is_freelist == 1) {
+        InterlockedIncrement(&freelist.num_of_pages);
+    }
 
     if (listhead == &standby_list && new_page->pagefile_num == 0) {
         DebugBreak();
@@ -276,6 +371,10 @@ void addToTail(page_t* listhead, page_t* new_page) {
     listhead->blink->flink = new_page;
     listhead->blink = new_page;
     listhead->num_of_pages += 1;
+
+    if (listhead->is_freelist == 1) {
+        InterlockedIncrement(&freelist.num_of_pages);
+    }
 
     if (listhead == &standby_list && new_page->pagefile_num == 0) {
         DebugBreak();

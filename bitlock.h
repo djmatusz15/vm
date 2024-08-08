@@ -5,3 +5,5 @@
 void trimmer();
 void acquireLock(volatile LONG* lock);
 void releaseLock(volatile LONG* lock);
+BOOL tryAcquireLock(volatile LONG* lock);
+int acquireRandomFreelistLock();

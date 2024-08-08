@@ -313,6 +313,7 @@ commit_at_fault_time_test (
 
 HANDLE physical_page_handle;
 ULONG_PTR virtual_address_size;
+ULONG_PTR virtual_address_size_in_unsigned_chunks;
 
 page_t freelist;
 page_t standby_list;
@@ -324,6 +325,12 @@ HANDLE trim_now;
 HANDLE aging_event;
 PAGE_TABLE* pgtb;
 ULONG64 num_pagefile_blocks;
+
+// Global counts for faults
+int rescues;
+int read_from_disk;
+int new_ptes;
+int ran_into_active_ptes;
 
 #if SUPPORT_MULTIPLE_VA_TO_SAME_PAGE
 
@@ -337,16 +344,20 @@ full_virtual_memory_test (
     )
 {
     unsigned i;
-    PULONG_PTR arbitrary_va;
-    unsigned random_number;
     BOOL allocated;
     BOOL page_faulted;
     BOOL privilege;
     BOOL obtained_pages;
     ULONG_PTR physical_page_count;
     PULONG_PTR physical_page_numbers;
-    ULONG_PTR virtual_address_size_in_unsigned_chunks;
     clock_t start_t, end_t;
+
+
+    rescues = 0;
+    read_from_disk = 0;
+    new_ptes = 0;
+    ran_into_active_ptes = 0;
+    
 
     //
     // Allocate the physical pages that we will be managing.
@@ -422,7 +433,8 @@ full_virtual_memory_test (
 
 
     // #if 0
-    virtual_address_size = 32 * NUMBER_OF_PHYSICAL_PAGES * PAGE_SIZE;
+
+    virtual_address_size = FRACTION_OF_VA_SPACE_ALLOCATED_TO_PHYSICAL * NUMBER_OF_PHYSICAL_PAGES * PAGE_SIZE;       // * 16
 
     //
     // Round down to a PAGE_SIZE boundary.
@@ -435,9 +447,10 @@ full_virtual_memory_test (
     // +2 is because we save PTE bits;
     // don't use the first pagefile block of i = 0
     // so that we can lose a pagefile block instead of 
-    // using a precious PTE bit. 
-
-    // DM: Why +2 again?
+    // using a precious PTE bit. We have to make it +2 
+    // so that we have an extra pagefile slot for the trade;
+    // we can still put the contents in, even though all the 
+    // slots are filled, to take one out
 
     num_pagefile_blocks = (virtual_address_size / PAGE_SIZE) - physical_page_count + 2;
 
@@ -487,14 +500,20 @@ full_virtual_memory_test (
     // Now perform random accesses.
     //
 
+    ULONG64 lowest = 0x7fffffff;
     ULONG64 highest = 0x0;
     for (unsigned i = 0; i < physical_page_count; i++) {
         if (physical_page_numbers[i] > highest) {
             highest = physical_page_numbers[i];
         }
+        if (physical_page_numbers[i] < lowest) {
+            lowest = physical_page_numbers[i];
+        }
     }
+    printf("Lowest VA referenced: %lld\n", lowest);
+    printf("Highest VA referenced: %lld\n", highest);
 
-    base_pfn = VirtualAlloc(NULL, (highest + 1) * sizeof(page_t), MEM_RESERVE, PAGE_READWRITE);
+    base_pfn = VirtualAlloc(NULL, ((highest + 1)) * sizeof(page_t), MEM_RESERVE, PAGE_READWRITE);
     if (base_pfn == NULL) {
         printf("Couldn't alloc base\n");
         return;
@@ -507,32 +526,21 @@ full_virtual_memory_test (
         return;
     }
 
-    srand (time (NULL));
+
+    // DM: have to change up the random seed for each thread
+
+    // srand (time (NULL));
 
     instantiateFreeList(physical_page_numbers, physical_page_count, base_pfn);
     instantiateStandyList();
     instantiateModifiedList();
     instantiateZeroList();
+
     HANDLE* thread_handles = initialize_threads();
 
+    // printf("Initialized threads\n");
 
-    WaitForSingleObject(thread_handles[3], INFINITE);
-    WaitForSingleObject(thread_handles[4], INFINITE);
-    WaitForSingleObject(thread_handles[5], INFINITE);
-    WaitForSingleObject(thread_handles[6], INFINITE);
-    WaitForSingleObject(thread_handles[7], INFINITE);
-    WaitForSingleObject(thread_handles[8], INFINITE);
-    WaitForSingleObject(thread_handles[9], INFINITE);
-    WaitForSingleObject(thread_handles[10], INFINITE);
-    WaitForSingleObject(thread_handles[11], INFINITE);
-    WaitForSingleObject(thread_handles[12], INFINITE);
-    WaitForSingleObject(thread_handles[13], INFINITE);
-    WaitForSingleObject(thread_handles[14], INFINITE);
-    WaitForSingleObject(thread_handles[15], INFINITE);
-    WaitForSingleObject(thread_handles[16], INFINITE);
-    WaitForSingleObject(thread_handles[17], INFINITE);
-    WaitForSingleObject(thread_handles[18], INFINITE);
-    // WaitForMultipleObjects(NUM_OF_FAULTING_THREADS, &thread_handles[3], TRUE, INFINITE);
+    WaitForMultipleObjects(NUM_OF_FAULTING_THREADS, &thread_handles[3], TRUE, INFINITE);
 
 
     // SetEvent(global_exit_event);
@@ -544,6 +552,10 @@ full_virtual_memory_test (
     double total_time =  ((double) (end_t - start_t)) / CLOCKS_PER_SEC;
 
     printf("Total CPU time used: %.5f\n", total_time);
+    printf("Total Rescues: %d\n", rescues);
+    printf("Total disk reads: %d\n", read_from_disk);
+    printf("Total new PTEs handled: %d\n", new_ptes);
+    printf("Total active PTEs ran into: %d\n", ran_into_active_ptes);
 
     //
     // Now that we're done with our memory we can be a good

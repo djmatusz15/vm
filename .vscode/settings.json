@@ -1,5 +1,8 @@
 {
     "files.associations": {
-        "windows.h": "c"
+        "windows.h": "c",
+        "charconv": "c",
+        "cmath": "c",
+        "xlocnum": "c"
     }
 }
