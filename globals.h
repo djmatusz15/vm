@@ -20,9 +20,18 @@
 #define PTES_PER_REGION    ((NUMBER_OF_VIRTUAL_PAGES) / NUM_PTE_REGIONS)  
 #define BATCH_SIZE 256          // 1024       
 
+
+// Handling switching permissions
+
+#define PAGE_MAPUSERPHYSCAL_READONLY_CAST 0x8000000000000000
+#define READONLY 0 
+#define READWRITE 1  
+
+
 // Defines number of threads we are using in our program
 // NUM_OF_THREADS = total threads, including trimmer + modified
 // writer + ager, NUM_OF_FAULTING THREADS = number of threads faulting
+
 #define NUM_OF_THREADS             7
 #define NUM_OF_FAULTING_THREADS     NUM_OF_THREADS - 3
 
@@ -37,12 +46,16 @@
 #define MOVE_PAGES_FROM_STANDBY_TO_FREELIST 1
 
 // Not in use yet
-#define SUPPORT_MULTIPLE_FREELISTS 0
+
+#define SUPPORT_MULTIPLE_FREELISTS 1
 #define NUM_FREELISTS           64
 
 
 #define READ_BATCH_FROM_DISK 1
 #define CONSECUTIVE_ACCESSES 128
+
+
+#define TOTAL_FAULTS_IN_MB 1
 
 // Flusher struct for temp VA for reading from disk
 
@@ -77,17 +90,21 @@ extern ULONG64 num_pagefile_blocks;
 extern HANDLE aging_event;
 extern HANDLE trim_now;
 
-// Temp VAs
-extern LPVOID modified_page_va;
+// Temp VA for writing
 
-// Writing to disk variables
+// Switching this to array of temp
+// mod writing VAs for batch writes
+
+extern LPVOID* modified_writer_vas;
+
+// Writing to disk events
 extern HANDLE modified_list_notempty;
 extern HANDLE pagefile_blocks_available;
 
 // Pagetable
 extern PAGE_TABLE* pgtb;
 
-// Standby
+// Standby list events
 extern HANDLE pages_available;
 
 

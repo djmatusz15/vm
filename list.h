@@ -37,9 +37,17 @@ typedef struct page {
     unsigned int in_flight;
     unsigned int was_rescued;
 
-    // Used for page read/write privileges
-    unsigned int read;
-    unsigned int write;
+    // Used for page read/write privileges.
+    // Right now, only supporting read-write
+    // or read-only privileges. Thus, only need
+    // one bit to keep track of the two states.
+    // In the future, implementing none/executable
+    // privileges would require two bits to store,
+    // in both the PTE and the page (since I store
+    // the states in both)
+
+    unsigned int readwrite;
+
 } page_t;
 
 

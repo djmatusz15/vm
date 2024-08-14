@@ -100,3 +100,17 @@ PULONG_PTR pte_to_va(PTE* pte, PAGE_TABLE* pgtb) {
     return virtual_address;
 
 }
+
+
+// This function will be used to switch 
+// PFNs so they are read-only permissions. This
+// will allow us to save pagefile spaces and
+// potential writes in the future
+
+ULONG64 convert_page_to_readonly(page_t* page) {
+    ULONG64 page_pfn = page_to_pfn(page);
+
+    page_pfn = page_pfn | PAGE_MAPUSERPHYSCAL_READONLY_CAST;
+
+    return page_pfn;
+}

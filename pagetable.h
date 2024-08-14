@@ -1,7 +1,6 @@
 #ifndef PAGETABLE_H
 #define PAGETABLE_H
 
-// #define PAGE_SIZE 4096      // 4k Pages
 
 #include <stdio.h>
 #include <windows.h>
@@ -16,6 +15,7 @@ typedef struct {
     ULONG64 valid: 1;
     ULONG64 frame_number: 40;
     ULONG64 age: 3;
+    // ULONG64 privileges: 1;
 } VALID_PTE;
 
 typedef struct {
@@ -36,7 +36,6 @@ typedef struct {
     // Always one (must share same space as disk format)
     ULONG64 in_memory: 1;
     ULONG64 frame_number: 40;
-    // ULONG64 is_modified: 1;
 } TRANSITION_PTE;
 
 typedef struct {
@@ -68,6 +67,7 @@ typedef struct {
 PAGE_TABLE* instantiatePagetable(ULONG64 num_VAs, page_t* virtual_memory_nums);
 ULONG64 va_to_pte_index(PULONG_PTR arbitrary_va, PAGE_TABLE* pgtb);
 PULONG_PTR pte_to_va(PTE* pte, PAGE_TABLE* pgtb);
+ULONG64 convert_page_to_readonly(page_t* page);
 
 
 #endif // PAGETABLE_H

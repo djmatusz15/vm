@@ -129,9 +129,8 @@ void instantiateStandyList () {
 
 HANDLE modified_list_notempty;
 HANDLE pagefile_blocks_available;
-LPVOID modified_page_va;
-// PUCHAR pagefile_state;
-// PUCHAR pagefile_contents;
+//LPVOID modified_page_va;
+LPVOID* modified_writer_vas;
 
 pagefile_t pf;
 
@@ -148,6 +147,12 @@ void instantiateModifiedList() {
     modified_list_notempty = CreateEvent(NULL, FALSE, FALSE, NULL);
     pagefile_blocks_available = CreateEvent(NULL, FALSE, FALSE, NULL);
 
+    modified_writer_vas = malloc(sizeof(LPVOID) * BATCH_SIZE);
+    if (modified_writer_vas == NULL) {
+        printf("Couldn't malloc for mod writer VAs\n");
+        return;
+    }
+
 
     #if SUPPORT_MULTIPLE_VA_TO_SAME_PAGE
 
@@ -155,14 +160,26 @@ void instantiateModifiedList() {
 
     parameter.Type = MemExtendedParameterUserPhysicalHandle;
     parameter.Handle = physical_page_handle;
+    
 
-    modified_page_va = VirtualAlloc2 (NULL,
+
+    for (unsigned i = 0; i < BATCH_SIZE; i++) {
+        LPVOID modified_page_va = VirtualAlloc2 (NULL,
                        NULL,
-                       PAGE_SIZE * BATCH_SIZE,
+                       PAGE_SIZE,
                        MEM_RESERVE | MEM_PHYSICAL,
                        PAGE_READWRITE,
                        &parameter,
                        1);
+        
+        if (modified_page_va == NULL) {
+            printf("Could not malloc for a mod writer VA\n");
+            return;
+        }
+
+
+        modified_writer_vas[i] = modified_page_va;
+    }
 
     #else
 

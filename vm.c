@@ -538,7 +538,6 @@ full_virtual_memory_test (
 
     HANDLE* thread_handles = initialize_threads();
 
-    // printf("Initialized threads\n");
 
     WaitForMultipleObjects(NUM_OF_FAULTING_THREADS, &thread_handles[3], TRUE, INFINITE);
 

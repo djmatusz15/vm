@@ -3,7 +3,7 @@
 
 // DM: Careful in holding the PTE region lock the whole time
 
-BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher) {
+BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins) {
 
     ULONG64 conv_index = va_to_pte_index(arbitrary_va, pgtb);
     ULONG64 pte_region_index_for_lock = conv_index / PTES_PER_REGION;
@@ -28,26 +28,12 @@ BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher) {
     // Active by another thread, or set to valid previously
     else if (curr_pte->memory_format.valid == 1) {
 
-        // DM: Here, we have to check if the valid bit was set
-        // because we pagefaulted on THIS PTE and mapped the VA
-        // to a physical address, or because we set the valid bit 
-        // since it was a neighbor of a VA we had pagefaulted on.
 
-        // PULONG_PTR curr_pte_va = pte_to_va(curr_pte, pgtb);
-
-        // // If this is true, then we know we have accessed one of those
-        // // neighbor PTEs, since it's valid but never mapped the VA to
-        // // a PA. So, that's all we have to do here.
-        // if (curr_pte_va == NULL) {
-        //     ULONG64 neighbor_pte_pfn = curr_pte->memory_format.frame_number;
-        //     if (MapUserPhysicalPages(arbitrary_va, 1, &neighbor_pte_pfn) == FALSE) {
-        //         DebugBreak();
-        //         printf("Could not map neighbor VA to its PA\n");
-        //         return FALSE;
-        //     }
-        // }
+        // checkPrivilegesPTE(curr_pte);
 
         ran_into_active_ptes++;
+
+
     }
 
 
@@ -77,7 +63,7 @@ BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher) {
     // to the PTE
     else {
 
-        handled_fault = handle_on_disk(curr_pte, pte_region_index_for_lock, flusher);
+        handled_fault = handle_on_disk(curr_pte, pte_region_index_for_lock, flusher, batch_vas_for_readins, batch_pfns_for_readins);
 
     }
 
@@ -97,11 +83,14 @@ BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher) {
 
 }
 
+
+
+
 BOOL map_to_pfn(PULONG_PTR arbitrary_va, ULONG64 pfn) {
     if (MapUserPhysicalPages (arbitrary_va, 1, &pfn) == FALSE) {
 
-        DebugBreak();
         printf ("pagefault : could not map VA %p to page %llX\n", arbitrary_va, pfn);
+        DebugBreak();
         return FALSE;
 
     }
@@ -112,14 +101,30 @@ BOOL map_to_pfn(PULONG_PTR arbitrary_va, ULONG64 pfn) {
 BOOL unmap_va(PULONG_PTR arbitrary_va) {
     if (MapUserPhysicalPages (arbitrary_va, 1, NULL) == FALSE) {
 
-        DebugBreak();
         printf ("pagefault : could not map VA %p\n", arbitrary_va);
+        DebugBreak();
         return FALSE;
 
     }
 
     return TRUE;
 }
+
+
+// DM: Building this function to check active PTEs
+// and see if their privileges have been changed.
+
+// VOID checkPrivileges(PTE* curr_pte) {
+
+//     page_t* page_of_curr_pte = pfn_to_page(curr_pte->memory_format.frame_number, pgtb);
+
+//     if (page_of_curr_pte->readwrite != curr_pte->memory_format.privileges) {
+
+//     }
+// }
+
+
+
 
 
 // Convert a PTE from Transition to Valid
@@ -140,10 +145,12 @@ VOID rescuePTE(PTE* curr_pte) {
     page_t* listhead;
 
     if (curr_pte->memory_format.valid == 1) {
+        printf("Valid format pte being rescued\n");
         DebugBreak();
     }
 
     if (curr_pte->transition_format.in_memory == 0) {
+        printf("Rescued page no longer in memory\n");
         DebugBreak();
     }
 
@@ -188,8 +195,8 @@ VOID rescuePTE(PTE* curr_pte) {
 
     if (MapUserPhysicalPages (arbitrary_va, 1, &pte_pfn) == FALSE) {
 
-        DebugBreak();
         printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", arbitrary_va, pte_pfn);
+        DebugBreak();
     }
 
     PTE local_contents;
@@ -255,16 +262,19 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     if (freelist_lock != -1) {
 
         if ((DWORD)freelist.freelists[freelist_lock].list_lock.OwningThread != GetCurrentThreadId()) {
+            printf("Mismatching freelist owning threads\n");
             DebugBreak();
         }
 
         if (freelist.freelists[freelist_lock].num_of_pages <= 0) {
+            printf("Still got empty freelist\n");
             DebugBreak();
         }
 
         curr_page = popHeadPage(&freelist.freelists[freelist_lock]);
 
         if (curr_page == NULL) {
+            printf("Null page from standby\n");
             DebugBreak();
         }
 
@@ -300,8 +310,8 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
 
     BOOL mapped = map_to_pfn(arbitrary_va, popped_pfn);
     if (mapped == FALSE) {
-        DebugBreak();
         printf("Could not map (handle_new_pte)\n");
+        DebugBreak();
     }
 
     // DM: MUST KEEP TRACK OF THIS!
@@ -322,6 +332,7 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     if (on_standby == TRUE) {
 
        if (freelist_lock != -1) {
+            printf("Broken freelist acquisition\n");
             DebugBreak();
        }
 
@@ -425,11 +436,9 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
         //     DebugBreak();
         // }
 
-        //releaseLock(&standby_list.bitlock);
         LeaveCriticalSection(&standby_list.list_lock);
     }
     else {
-        //releaseLock(&freelist.bitlock);
         LeaveCriticalSection(&freelist.list_lock);
     }
 
@@ -445,7 +454,7 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
 
 
 
-BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* flusher) {
+BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins) {
     page_t* repurposed_page;
     BOOL on_standby;
     ULONG64 curr_pte_pagefile_num = curr_pte->disc_format.pagefile_num;
@@ -453,7 +462,7 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
 
     #if READ_BATCH_FROM_DISK
 
-    BOOL read_in_batch = read_batch_from_disk(curr_pte, pte_region_index_for_lock, flusher);
+    BOOL read_in_batch = read_batch_from_disk(curr_pte, pte_region_index_for_lock, flusher, batch_vas_for_readins, batch_pfns_for_readins);
     if (read_in_batch == FALSE) {
         return FALSE;
     }
@@ -467,7 +476,6 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
 
 
 
-    //acquireLock(&freelist.bitlock);
     EnterCriticalSection(&freelist.list_lock);
 
     repurposed_page = popHeadPage(&freelist);
@@ -476,16 +484,13 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
     if (repurposed_page == NULL) {
         on_standby = TRUE;
 
-        //releaseLock(&freelist.bitlock);
         LeaveCriticalSection(&freelist.list_lock);
 
-        //acquireLock(&standby_list.bitlock);
         EnterCriticalSection(&standby_list.list_lock);
 
         repurposed_page = recycleOldestPage(pte_region_index_for_lock);
         if (repurposed_page == NULL) {
 
-            //releaseLock(&standby_list.bitlock);
             LeaveCriticalSection(&standby_list.list_lock);
 
             // No pages left, maybe trigger the trim event now.
@@ -503,11 +508,9 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
     if (MapUserPhysicalPages (flusher->temp_vas[flusher->num_of_vas_used], 1, &conv_page_num) == FALSE) {
         
         if (on_standby == TRUE) {
-            //releaseLock(&standby_list.bitlock);
             LeaveCriticalSection(&standby_list.list_lock);
         }
         else {
-            //releaseLock(&freelist.bitlock);
             LeaveCriticalSection(&freelist.list_lock);
         }
 
@@ -525,11 +528,9 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
         if (MapUserPhysicalPagesScatter(flusher->temp_vas, NUM_TEMP_VAS, NULL) == FALSE) {
 
             if (on_standby == TRUE) {
-                //releaseLock(&standby_list.bitlock);
                 LeaveCriticalSection(&standby_list.list_lock);
             }
             else {
-                //releaseLock(&freelist.bitlock);
                 LeaveCriticalSection(&freelist.list_lock);
             }
 
@@ -551,7 +552,6 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
     local_contents.memory_format.frame_number = page_to_pfn(repurposed_page);
     WriteToPTE(curr_pte, local_contents);
 
-    //*curr_pte = local_contents;
 
     if (repurposed_page->pagefile_num != 0) {
         DebugBreak();
@@ -565,11 +565,9 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
     if (MapUserPhysicalPages (arbitrary_va, 1, &new_mapping) == FALSE) {
         
         if (on_standby == TRUE) {
-            //releaseLock(&standby_list.bitlock);
             LeaveCriticalSection(&standby_list.list_lock);
         }
         else {
-            //releaseLock(&freelist.bitlock);
             LeaveCriticalSection(&freelist.list_lock);
         }
 
@@ -589,16 +587,17 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
         // pages from the tail of standby, zero them out
         // with memset(0) and move them to zero list
 
+        #if MOVE_PAGES_FROM_STANDBY_TO_FREELIST
 
         move_pages_from_standby_to_freelist(pte_region_index_for_lock);
 
-        //releaseLock(&standby_list.bitlock);
+        #endif
+
         LeaveCriticalSection(&standby_list.list_lock);
 
     }
 
     else {
-        //releaseLock(&freelist.bitlock);
         LeaveCriticalSection(&freelist.list_lock);
     }
 
@@ -609,14 +608,12 @@ BOOL handle_on_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* f
     // thread knows there's a free slot on
     // the disk open again
 
-    acquireLock(&modified_list.bitlock);
-    // EnterCriticalSection(&modified_list.list_lock);
+    EnterCriticalSection(&modified_list.list_lock);
 
     pf.pagefile_state[curr_pte_pagefile_num] = 0;
     pf.free_pagefile_blocks++;
 
-    releaseLock(&modified_list.bitlock);
-    //LeaveCriticalSection(&modified_list.list_lock);
+    LeaveCriticalSection(&modified_list.list_lock);
 
 
     SetEvent(pagefile_blocks_available);
@@ -672,6 +669,7 @@ page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
 
     if (pgtb->pte_regions_locks[attempt_region].owning_thread != 0) {
         if (pgtb->pte_regions_locks[attempt_region].owning_thread != curr_thread) {
+            printf("Mismatching freelist owning threads\n");
             DebugBreak();
         }
     }
@@ -683,6 +681,7 @@ page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
 
     // Couldn't get from standby either
     if (curr_page == NULL) {
+        printf("No pages available\n");
         UnlockPagetable(attempt_region);
         DebugBreak();
         return NULL;
@@ -692,21 +691,20 @@ page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
 
     BOOL unmap = unmap_va(pte_to_va(old_pte, pgtb));
     if (unmap == FALSE) {
+        printf ("full_virtual_memory_test : could not unmap VA (handle_new_pte)\n");
         DebugBreak();
-        //printf ("full_virtual_memory_test : could not unmap VA (handle_new_pte)\n");
     }
 
+    // Remind old PTE where to get its contents from
 
     PTE local_contents;
     local_contents.entire_format = 0;
 
     local_contents.disc_format.in_memory = 0;
-    // Remind old PTE where to get its contents from
     local_contents.disc_format.pagefile_num = curr_page->pagefile_num;
 
     WriteToPTE(old_pte, local_contents);
 
-    // *old_pte = local_contents;
 
     #if READ_BATCH_FROM_DISK == 0
     curr_page->pagefile_num = 0;
@@ -755,26 +753,29 @@ void move_pages_from_standby_to_freelist(ULONG64 pte_region_index_for_lock) {
             }
 
 
-            // DM: This should fix repetition of VAs. Next,
-            // batch these all into one flush like with the temp VAs.
-
-            PULONG_PTR va_of_curr_pages_pte = pte_to_va(curr_page->pte, pgtb);
-
-
-            if (MapUserPhysicalPages(va_of_curr_pages_pte, 1, NULL) == FALSE) {
-                LeaveCriticalSection(&standby_list.list_lock);
-                DebugBreak();
-            }
-
 
             // Need to tell this PTE that it's page is no
             // longer available for rescue, meaning it is 
             // invalid.
 
-            //ULONG64 curr_pte_index = va_to_pte_index(va_of_curr_pages_pte, pgtb);
-            //ULONG64 curr_pte_index_region = curr_pte_index / PTES_PER_REGION;
+            PULONG_PTR va_of_curr_pages_pte = pte_to_va(curr_page->pte, pgtb);
 
-            //LockPagetable(curr_pte_index_region);
+            ULONG64 curr_pte_index = va_to_pte_index(va_of_curr_pages_pte, pgtb);
+            ULONG64 curr_pte_index_region = curr_pte_index / PTES_PER_REGION;
+
+            // LockPagetable(curr_pte_index_region);
+
+            // DM: Back out if this will cause a deadlock, and try
+            // again with a different page from standby list.
+
+            if (TryEnterCriticalSection(&pgtb->pte_regions_locks[curr_pte_index_region].lock) == 0) {
+                addToHead(&standby_list, curr_page);
+                continue;
+            }
+
+            DWORD curr_thread = GetCurrentThreadId();
+            pgtb->pte_regions_locks[curr_pte_index_region].owning_thread = curr_thread;
+
 
             PTE local_contents;
             local_contents.entire_format = 0;
@@ -783,13 +784,13 @@ void move_pages_from_standby_to_freelist(ULONG64 pte_region_index_for_lock) {
             local_contents.disc_format.pagefile_num = curr_page->pagefile_num;
             WriteToPTE(curr_page->pte, local_contents);
 
-            //UnlockPagetable(curr_pte_index_region);
+            curr_page->pagefile_num = 0;
+
+            UnlockPagetable(curr_pte_index_region);
 
 
             // DM: Zero out the page to remove any sensitive data
             // memset(page_to_pfn(curr_page), 0, PAGE_SIZE);
-
-            curr_page->pagefile_num = 0;
 
 
 
@@ -878,7 +879,7 @@ void move_pages_from_standby_to_freelist(ULONG64 pte_region_index_for_lock) {
 
 
 
-BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* flusher) {
+BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins) {
 
     #if SUPPORT_MULTIPLE_FREELISTS
 
@@ -886,7 +887,28 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
     PULONG_PTR base_va = pte_to_va(curr_pte, pgtb);
     ULONG64 base_pte_index = va_to_pte_index(base_va, pgtb);
 
+    int count_batch_vas = 0;
+
     for (unsigned i = 0; i < (CONSECUTIVE_ACCESSES/ 8); i++) {
+
+
+        PTE* attempt_pte = &pgtb->pte_array[base_pte_index + i];
+        ULONG64 attempt_pte_region = (base_pte_index + i) / PTES_PER_REGION;
+
+        if (attempt_pte->memory_format.valid == 1 || attempt_pte->transition_format.in_memory == 1 || attempt_pte->entire_format == 0) {
+            continue;
+        }
+
+
+        if (TryEnterCriticalSection(&pgtb->pte_regions_locks[attempt_pte_region].lock) == 0) {
+            continue;
+        }
+
+
+
+        DWORD curr_thread = GetCurrentThreadId();
+        pgtb->pte_regions_locks[attempt_pte_region].owning_thread = curr_thread;
+
 
         BOOL on_standby = FALSE;
 
@@ -896,6 +918,8 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
 
             repurposed_page = popHeadPage(&freelist.freelists[freelist_lock]);
 
+            LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
+
         }
 
 
@@ -903,7 +927,6 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
         if (freelist_lock == -1) {
             on_standby = TRUE;
 
-            LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
 
             EnterCriticalSection(&standby_list.list_lock);
 
@@ -917,105 +940,84 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
                 // we want to trigger an event, and release PTE lock
                 
                 //SetEvent(trim_now);
-                return FALSE;
+                
+                UnlockPagetable(attempt_pte_region);
+
+                continue;
             }
+
+            // Move pages from standby to freelists to
+            // reduce standby list contention
+
+            #if MOVE_PAGES_FROM_STANDBY_TO_FREELIST
+            move_pages_from_standby_to_freelist(pte_region_index_for_lock);
+            #endif
+
+
+            LeaveCriticalSection(&standby_list.list_lock);
 
         }
 
-        PTE* attempt_pte = &pgtb->pte_array[base_pte_index + i];
-
-
-        // Basically, only read in page if its on disk.
-        // Otherwise, just skip over it.
-
-        if (attempt_pte->memory_format.valid == 1 || attempt_pte->transition_format.in_memory == 1 || attempt_pte->entire_format == 0) {
-            
-            if (on_standby == TRUE) {
-                addToHead(&standby_list, repurposed_page);
-                LeaveCriticalSection(&standby_list.list_lock);
-            }
-            else {
-                addToHead(&freelist.freelists[freelist_lock], repurposed_page);
-                LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
-            }
-
-            continue;
-        }
-
-
-        // Now, we can assume we have a PTE that is in disk format. Get
-        // where the contents of this PTE from the disk to read in
-
-        ULONG64 attempt_pte_pagefile_slot = attempt_pte->disc_format.pagefile_num;
 
         PULONG_PTR attempt_va = pte_to_va(attempt_pte, pgtb);
 
-        ULONG64 conv_page_num = page_to_pfn(repurposed_page);
+        batch_vas_for_readins[count_batch_vas] = attempt_va;
+        batch_pfns_for_readins[count_batch_vas] = page_to_pfn(repurposed_page);
 
-        if (MapUserPhysicalPages (flusher->temp_vas[flusher->num_of_vas_used], 1, &conv_page_num) == FALSE) {
-            
-            if (on_standby == TRUE) {
-                LeaveCriticalSection(&standby_list.list_lock);
+        count_batch_vas++;
+
+    }
+
+
+        
+
+
+    if ((count_batch_vas + flusher->num_of_vas_used) >= (NUM_TEMP_VAS)) {
+
+        if (MapUserPhysicalPagesScatter(flusher->temp_vas, flusher->num_of_vas_used, NULL) == 0) {
+
+            for (unsigned j = 0; j < count_batch_vas; j++) {
+                ULONG64 pte_region_to_leave = va_to_pte_index(batch_vas_for_readins[j], pgtb) / PTES_PER_REGION;
+                LeaveCriticalSection(&pgtb->pte_regions_locks[pte_region_to_leave].lock);
+
+                // Gracefully, would also have to add back all the pages to respective
+                // lists, but this should never happen.
             }
 
-            else {
-                LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
-            }
-
-            printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", flusher->temp_vas[flusher->num_of_vas_used], conv_page_num);
             DebugBreak();
             return FALSE;
 
         }
+
+        flusher->num_of_vas_used = 0;
+    }
+
+
+
+    if (MapUserPhysicalPagesScatter(&flusher->temp_vas[flusher->num_of_vas_used], count_batch_vas, batch_pfns_for_readins) == 0) {
+
+        for (unsigned j = 0; j < count_batch_vas; j++) {
+                ULONG64 pte_region_to_leave = va_to_pte_index(batch_vas_for_readins[j], pgtb) / PTES_PER_REGION;
+                LeaveCriticalSection(&pgtb->pte_regions_locks[pte_region_to_leave].lock);
+
+                // Gracefully, would also have to add back all the pages to respective
+                // lists, but this should never happen.
+            }
+
+        DebugBreak();
+        return FALSE;
+
+    }
+    
+
+    for (unsigned i = 0; i < count_batch_vas; i++) {
+
+        ULONG64 attempt_pte_index = va_to_pte_index(batch_vas_for_readins[i], pgtb);
+        PTE* attempt_pte = &pgtb->pte_array[attempt_pte_index];
+        ULONG64 attempt_pte_pagefile_slot = attempt_pte->disc_format.pagefile_num;
 
         memcpy(flusher->temp_vas[flusher->num_of_vas_used], &pf.pagefile_contents[attempt_pte_pagefile_slot * PAGE_SIZE], PAGE_SIZE);
-
         flusher->num_of_vas_used++;
-
-        if (flusher->num_of_vas_used == NUM_TEMP_VAS) {
-
-            if (MapUserPhysicalPagesScatter(flusher->temp_vas, NUM_TEMP_VAS, NULL) == FALSE) {
-
-                if (on_standby == TRUE) {
-                    LeaveCriticalSection(&standby_list.list_lock);
-                }
-                else {
-                    LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
-                }
-
-                printf ("full_virtual_memory_test : could not unmap VA %p\n", flusher->temp_vas);
-                DebugBreak();
-                return FALSE;
-
-            }
-
-            flusher->num_of_vas_used = 0;
-
-        }
-
-
-        // ULONG64 new_mapping = local_contents.memory_format.frame_number;
-
-
-        if (MapUserPhysicalPages (attempt_va, 1, &conv_page_num) == FALSE) {
-            
-            if (on_standby == TRUE) {
-                LeaveCriticalSection(&standby_list.list_lock);
-            }
-            else {
-                LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
-            }
-
-            printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", attempt_va, conv_page_num);
-            DebugBreak();
-            return FALSE;
-
-        }
-
-        // DM: MUST KEEP TRACK OF THIS NOW!
-        // recycleOldestPage no longer does this
-
-        repurposed_page->pagefile_num = 0;
 
 
         PTE local_contents;
@@ -1023,45 +1025,15 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
 
         local_contents.memory_format.age = 0;
         local_contents.memory_format.valid = 1;
-        local_contents.memory_format.frame_number = page_to_pfn(repurposed_page);
+        local_contents.memory_format.frame_number = batch_pfns_for_readins[i];
 
-        // THIS HAS TO BE attempt_pte
         WriteToPTE(attempt_pte, local_contents);
 
-        repurposed_page->pte = curr_pte;
 
+        page_t* curr_page = pfn_to_page(batch_pfns_for_readins[i], pgtb);
+        curr_page->pte = attempt_pte;
+        curr_page->pagefile_num = 0;
 
-
-        if (on_standby == TRUE) {
-
-            // DM: While I have the standby list lock,
-            // I should free up some pages and move them
-            // to the freelist/zero list. This way, 
-            // contention will be relieved on the standby
-            // list lock. Should just pop a few of the oldest
-            // pages from the tail of standby, zero them out
-            // with memset(0) and move them to zero list
-
-
-            #if MOVE_PAGES_FROM_STANDBY_TO_FREELIST
-
-            move_pages_from_standby_to_freelist(pte_region_index_for_lock);
-
-            #endif
-
-            LeaveCriticalSection(&standby_list.list_lock);
-
-        }
-
-        else {
-            LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
-        }
-
-
-        // Make the disk slot free again,
-        // and set an event so that the modifying
-        // thread knows there's a free slot on
-        // the disk open again
 
         EnterCriticalSection(&modified_list.list_lock);
 
@@ -1071,12 +1043,48 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
         LeaveCriticalSection(&modified_list.list_lock);
 
 
-        SetEvent(pagefile_blocks_available);
-
-
+        // SetEvent(pagefile_blocks_available);
         read_from_disk++;
 
+
+
     }
+
+    if (MapUserPhysicalPagesScatter(batch_vas_for_readins, count_batch_vas, batch_pfns_for_readins) == 0) {
+
+        for (unsigned j = 0; j < count_batch_vas; j++) {
+                ULONG64 pte_region_to_leave = va_to_pte_index(batch_vas_for_readins[j], pgtb) / PTES_PER_REGION;
+                LeaveCriticalSection(&pgtb->pte_regions_locks[pte_region_to_leave].lock);
+
+                // Gracefully, would also have to add back all the pages to respective
+                // lists, but this should never happen.
+            }
+
+        DebugBreak();
+        return FALSE;
+
+    }
+
+
+    // I unlock the PTE regions here. Before, when I was
+    // doing it all in the loop above, I could unlock a
+    // PTE region that belongs to a different PTE that I still
+    // need to set in batch_vas_for_readins. Thus, we leave the
+    // PTES in the same region free for other threads to alter
+    // before writing it properly. 
+
+    for (unsigned i = 0; i < count_batch_vas; i++) {
+        ULONG64 attempt_pte_index = va_to_pte_index(batch_vas_for_readins[i], pgtb);
+        ULONG64 attempt_pte_index_region = attempt_pte_index / PTES_PER_REGION;
+        UnlockPagetable(attempt_pte_index_region);
+    }
+
+
+    // Having this here, instead of setting it every time
+    // we open a pagefile slot, has the mod writer spin for 
+    // less than half of what it was previously doing.
+
+    SetEvent(pagefile_blocks_available);
     
     return TRUE;
 
@@ -1144,9 +1152,10 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
         PULONG_PTR attempt_va = pte_to_va(attempt_pte, pgtb);
 
         
-        // Map to temporary VAs, then the hardware
+        // Map to temporary VAs first
 
         ULONG64 conv_page_num = page_to_pfn(curr_page);
+
         if (MapUserPhysicalPages (flusher->temp_vas[flusher->num_of_vas_used], 1, &conv_page_num) == FALSE) {
 
             printf ("full_virtual_memory_test : could not map VA %p to page %llX\n", flusher->temp_vas[flusher->num_of_vas_used], conv_page_num);
@@ -1195,11 +1204,6 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
         WriteToPTE(attempt_pte, local_contents);
 
 
-        // DM: REIMPLEMENT IF CHANGE DOESN'T WORK
-        // if (curr_page->pagefile_num != 0) {
-        //     DebugBreak();
-        // }
-
         curr_page->pte = attempt_pte;
 
 
@@ -1232,13 +1236,11 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
         // thread knows there's a free slot on
         // the disk open again
 
-        //acquireLock(&modified_list.bitlock);
         EnterCriticalSection(&modified_list.list_lock);
 
         pf.pagefile_state[attempt_pte_pagefile_slot] = 0;
         pf.free_pagefile_blocks++;
 
-        //releaseLock(&modified_list.bitlock);
         LeaveCriticalSection(&modified_list.list_lock);
 
 
