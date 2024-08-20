@@ -3,7 +3,7 @@
 
 // DM: Careful in holding the PTE region lock the whole time
 
-BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins) {
+BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins, LPVOID temp_va_for_new_pte) {
 
     ULONG64 conv_index = va_to_pte_index(arbitrary_va, pgtb);
     ULONG64 pte_region_index_for_lock = conv_index / PTES_PER_REGION;
@@ -53,7 +53,7 @@ BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher, PULONG_PTR* batch_vas_
     // HANDLE BRAND NEW PTE
     else if (curr_pte->entire_format == 0) {
 
-        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock);
+        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock, temp_va_for_new_pte);
 
     }
 
@@ -164,20 +164,42 @@ VOID rescuePTE(PTE* curr_pte) {
     // have the right listhead
     
     while (1) {
+
+        // Check pre-emptively to see what we maybe
+        // should get
         if (curr_page->pagefile_num == 0) {
-            listhead = &modified_list;
+            if (curr_page->in_flight == 0) {
+                listhead = &modified_list;
+            }
+            else {
+                listhead = curr_page;
+            }
         }
         else {
             listhead = &standby_list;
         }
 
-            
-        EnterCriticalSection(&listhead->list_lock);
+
+
+        if (listhead != curr_page) {
+            EnterCriticalSection(&listhead->list_lock);
+        }
+
+
 
         if (curr_page->pagefile_num == 0) {
-            if (listhead == &modified_list) {
-                break;
+            if (curr_page->in_flight == 0) {
+                if (listhead == &modified_list) {
+                    break;
+                }
+
             }
+            // else {
+            //     if (listhead == curr_page) {
+            //         break;
+            //     }
+            // }
+            
         }
 
         else {
@@ -186,12 +208,16 @@ VOID rescuePTE(PTE* curr_pte) {
             }
         }
 
-        LeaveCriticalSection(&listhead->list_lock);
+        if (listhead != curr_page) {
+            LeaveCriticalSection(&listhead->list_lock);
+        }
 
         continue;
     }
 
-    popFromAnywhere(listhead, curr_page);
+    if (listhead != curr_page) {
+        popFromAnywhere(listhead, curr_page);
+    }
 
     if (MapUserPhysicalPages (arbitrary_va, 1, &pte_pfn) == FALSE) {
 
@@ -199,32 +225,31 @@ VOID rescuePTE(PTE* curr_pte) {
         DebugBreak();
     }
 
-    PTE local_contents;
-    local_contents.entire_format = 0;
 
-    local_contents.memory_format.age = 0;
-    local_contents.memory_format.valid = 1;
-    local_contents.memory_format.frame_number = pte_pfn;
-    WriteToPTE(curr_pte, local_contents);
-
+    if (listhead == curr_page) {
+        curr_page->was_rescued = 1;
+    }
+    
     curr_page->pte = curr_pte;
 
-    LeaveCriticalSection(&listhead->list_lock);
+    if (listhead != curr_page) {
+        LeaveCriticalSection(&listhead->list_lock);
+    }
 
 
     // Need synchronization with some form of lock,
-    // like pagefile lock of IncrementExchange
+    // like pagefile lock or IncrementExchange
 
     if (listhead != &modified_list) {
 
-        EnterCriticalSection(&modified_list.list_lock);
+        EnterCriticalSection(&pf.pf_lock);
 
         pf.pagefile_state[curr_page->pagefile_num] = 0;
         curr_page->pagefile_num = 0;
 
         pf.free_pagefile_blocks++;
 
-        LeaveCriticalSection(&modified_list.list_lock);
+        LeaveCriticalSection(&pf.pf_lock);
 
         // Need to set event here saying pagefile
         // state at this spot is now free!
@@ -232,19 +257,33 @@ VOID rescuePTE(PTE* curr_pte) {
         SetEvent(pagefile_blocks_available);
     }
 
+
+
+    PTE local_contents;
+    local_contents.entire_format = 0;
+
+    local_contents.memory_format.age = 0;
+    local_contents.memory_format.valid = 1;
+    local_contents.memory_format.frame_number = page_to_pfn(curr_page);
+    WriteToPTE(curr_pte, local_contents);
+
     rescues++;
 }
+
+
+
+
 
 
 
 #if SUPPORT_MULTIPLE_FREELISTS
 
 // PTE was never accessed before:
-// get page from freelist or cannabalize
-// from standby. Repurpose the page so
-// this PTE is active and can use it
+// get page from zerolist, freelist (and zero out) 
+// or cannabalize from standby. Repurpose the 
+// page so this PTE is active and can use it
 
-BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
+BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID temp_va_for_new_pte) {
 
     PTE_LOCK* pte_lock;
     ULONG64 pte_pfn;
@@ -252,36 +291,63 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     page_t* curr_page;
 
     int freelist_lock;
+    int zerolist_lock;
     BOOL on_standby = FALSE;
     PULONG_PTR arbitrary_va = pte_to_va(curr_pte, pgtb);
 
 
+    zerolist_lock = acquireRandomZerolistLock();   
 
-    freelist_lock = acquireRandomFreelistLock();
+    if (zerolist_lock != -1) {
 
-    if (freelist_lock != -1) {
-
-        if ((DWORD)freelist.freelists[freelist_lock].list_lock.OwningThread != GetCurrentThreadId()) {
-            printf("Mismatching freelist owning threads\n");
+        if ((DWORD)zero_list.freelists[zerolist_lock].list_lock.OwningThread != GetCurrentThreadId()) {
+            printf("Mismatching zerolist owning threads\n");
             DebugBreak();
         }
 
-        if (freelist.freelists[freelist_lock].num_of_pages <= 0) {
-            printf("Still got empty freelist\n");
+        if (zero_list.freelists[zerolist_lock].num_of_pages <= 0) {
+            printf("Still got empty zerolist\n");
             DebugBreak();
         }
 
-        curr_page = popHeadPage(&freelist.freelists[freelist_lock]);
+        // Popping Tail so to not potentially pop listhead accidentally
+        curr_page = popTailPage(&zero_list.freelists[zerolist_lock]);
 
-        if (curr_page == NULL) {
-            printf("Null page from standby\n");
+        if (curr_page == NULL || curr_page == &zero_list.freelists[zerolist_lock] || curr_page->num_of_pages != 0) {
+            printf("Null page from zerolist\n");
             DebugBreak();
         }
 
-        LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
+        LeaveCriticalSection(&zero_list.freelists[zerolist_lock].list_lock);
 
     }
 
+    else if (zerolist_lock == -1) {
+        freelist_lock = acquireRandomFreelistLock();
+
+        if (freelist_lock != -1) {
+
+            if ((DWORD)freelist.freelists[freelist_lock].list_lock.OwningThread != GetCurrentThreadId()) {
+                printf("Mismatching freelist owning threads\n");
+                DebugBreak();
+            }
+
+            if (freelist.freelists[freelist_lock].num_of_pages <= 0) {
+                printf("Still got empty freelist\n");
+                DebugBreak();
+            }
+
+            curr_page = popTailPage(&freelist.freelists[freelist_lock]);
+
+            if (curr_page == NULL || curr_page == &freelist.freelists[freelist_lock] || curr_page->num_of_pages != 0) {
+                printf("Null page from freelist\n");
+                DebugBreak();
+            }
+
+            LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
+
+        }
+    }
 
     if (freelist_lock == -1) {
         on_standby = TRUE;
@@ -303,7 +369,31 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
             //SetEvent(trim_now);
             return FALSE;
         }
+
+        LeaveCriticalSection(&standby_list.list_lock);
         
+    }
+
+
+    if (curr_page->pte != NULL) {
+
+        if (zerolist_lock == -1) {
+
+            BOOL mapped_temp_va = map_to_pfn(temp_va_for_new_pte, page_to_pfn(curr_page));
+            if (mapped_temp_va == FALSE) {
+                printf("Couldn't map page to temp VA for zeroing\n");
+                DebugBreak();
+            }
+
+            memset(temp_va_for_new_pte, 0, PAGE_SIZE);
+
+            BOOL unmaped_temp_va = unmap_va(temp_va_for_new_pte);
+            if (unmap_va == FALSE) {
+                printf("Failed at unmapping temp VA for zeroing\n");
+                DebugBreak();
+            }
+
+        }
     }
     
     popped_pfn = page_to_pfn(curr_page);
@@ -332,12 +422,10 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock) {
     if (on_standby == TRUE) {
 
        if (freelist_lock != -1) {
-            printf("Broken freelist acquisition\n");
+            printf("Broken freelist lock acquisition\n");
             DebugBreak();
        }
 
-
-        LeaveCriticalSection(&standby_list.list_lock);
     }
 
 
@@ -679,7 +767,7 @@ page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
 
     curr_page = popHeadPage(&standby_list);
 
-    // Couldn't get from standby either
+    // Couldn't get from standby
     if (curr_page == NULL) {
         printf("No pages available\n");
         UnlockPagetable(attempt_region);
@@ -688,12 +776,6 @@ page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
     }
 
     PTE* old_pte = curr_page->pte;
-
-    BOOL unmap = unmap_va(pte_to_va(old_pte, pgtb));
-    if (unmap == FALSE) {
-        printf ("full_virtual_memory_test : could not unmap VA (handle_new_pte)\n");
-        DebugBreak();
-    }
 
     // Remind old PTE where to get its contents from
 
@@ -805,6 +887,14 @@ void move_pages_from_standby_to_freelist(ULONG64 pte_region_index_for_lock) {
 
             LeaveCriticalSection(&freelist.freelists[freelist_to_add_to].list_lock);
 
+
+            // This is the only process that tries to move pages back
+            // onto the freelists, so this is where we should trigger the
+            // zeroing thread to let it know it can try to zero out 
+            // some pages
+
+            SetEvent(pages_on_freelists);
+
             
         }
 
@@ -892,6 +982,9 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
     for (unsigned i = 0; i < (CONSECUTIVE_ACCESSES/ 8); i++) {
 
 
+        // int zerolist_lock = -1;
+
+
         PTE* attempt_pte = &pgtb->pte_array[base_pte_index + i];
         ULONG64 attempt_pte_region = (base_pte_index + i) / PTES_PER_REGION;
 
@@ -916,15 +1009,36 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
 
         if (freelist_lock != -1) {
 
-            repurposed_page = popHeadPage(&freelist.freelists[freelist_lock]);
+            repurposed_page = popTailPage(&freelist.freelists[freelist_lock]);
+
+            if (repurposed_page->num_of_pages != 0) {
+                printf("Accidentally popped listhead somehow - freelist\n");
+                DebugBreak();
+            }
 
             LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
 
         }
 
 
+        // else if (freelist_lock == -1) {
+        //     zerolist_lock = acquireRandomZerolistLock();
 
-        if (freelist_lock == -1) {
+        //     if (zerolist_lock != -1) {
+
+        //         repurposed_page = popTailPage(&zero_list.freelists[zerolist_lock]);
+
+        //         if (repurposed_page->num_of_pages != 0) {
+        //             printf("Accidentally popped listhead somehow - zerolist\n");
+        //             DebugBreak();
+        //         }
+
+        //         LeaveCriticalSection(&zero_list.freelists[zerolist_lock]);
+        //     }
+
+        // }
+
+        else if (freelist_lock == -1) {
             on_standby = TRUE;
 
 
@@ -1035,15 +1149,15 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
         curr_page->pagefile_num = 0;
 
 
-        EnterCriticalSection(&modified_list.list_lock);
+        EnterCriticalSection(&pf.pf_lock);
 
         pf.pagefile_state[attempt_pte_pagefile_slot] = 0;
         pf.free_pagefile_blocks++;
 
-        LeaveCriticalSection(&modified_list.list_lock);
+        LeaveCriticalSection(&pf.pf_lock);
 
 
-        // SetEvent(pagefile_blocks_available);
+        //SetEvent(pagefile_blocks_available);
         read_from_disk++;
 
 

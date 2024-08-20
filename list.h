@@ -31,6 +31,16 @@ typedef struct page {
     unsigned int is_freelist;
 
 
+    // Only used for zerolists. Again,
+    // understand that it would be much 
+    // better to create list structures to
+    // carry less in each page, but lazily
+    // doing this for the sake of time
+
+
+    unsigned int is_zerolist;
+
+
     // Used for reference counting,
     // rescuing pages in flight
 

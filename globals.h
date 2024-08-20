@@ -16,7 +16,7 @@
 
 
 
-#define NUM_PTE_REGIONS     ((NUMBER_OF_VIRTUAL_PAGES) / 64)    // 32
+#define NUM_PTE_REGIONS     ((NUMBER_OF_VIRTUAL_PAGES) / 32)    // 32
 #define PTES_PER_REGION    ((NUMBER_OF_VIRTUAL_PAGES) / NUM_PTE_REGIONS)  
 #define BATCH_SIZE 256          // 1024       
 
@@ -32,8 +32,8 @@
 // NUM_OF_THREADS = total threads, including trimmer + modified
 // writer + ager, NUM_OF_FAULTING THREADS = number of threads faulting
 
-#define NUM_OF_THREADS             7
-#define NUM_OF_FAULTING_THREADS     NUM_OF_THREADS - 3
+#define NUM_OF_THREADS             12
+#define NUM_OF_FAULTING_THREADS     NUM_OF_THREADS - 4
 
 
 // The number of temporary VAs that we allow to flush 
@@ -91,7 +91,6 @@ extern HANDLE aging_event;
 extern HANDLE trim_now;
 
 // Temp VA for writing
-
 // Switching this to array of temp
 // mod writing VAs for batch writes
 
@@ -106,6 +105,9 @@ extern PAGE_TABLE* pgtb;
 
 // Standby list events
 extern HANDLE pages_available;
+
+// Zero list events
+extern HANDLE pages_on_freelists;
 
 
 // Global counts for faults

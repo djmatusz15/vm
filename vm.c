@@ -539,7 +539,7 @@ full_virtual_memory_test (
     HANDLE* thread_handles = initialize_threads();
 
 
-    WaitForMultipleObjects(NUM_OF_FAULTING_THREADS, &thread_handles[3], TRUE, INFINITE);
+    WaitForMultipleObjects(NUM_OF_FAULTING_THREADS, &thread_handles[4], TRUE, INFINITE);
 
 
     // SetEvent(global_exit_event);

@@ -202,6 +202,9 @@ void instantiateModifiedList() {
     pf.pagefile_state = malloc(sizeof(UCHAR) * num_pagefile_blocks);
     pf.pagefile_contents = malloc(PAGE_SIZE * num_pagefile_blocks);
 
+    InitializeCriticalSection(&pf.pf_lock);
+    EnterCriticalSection(&pf.pf_lock);
+
     for (unsigned i = 0; i < num_pagefile_blocks; i++) {
         pf.pagefile_state[i] = 0;
     }
@@ -212,6 +215,8 @@ void instantiateModifiedList() {
 
     pf.free_pagefile_blocks = num_pagefile_blocks;
 
+    LeaveCriticalSection(&pf.pf_lock);
+
     InitializeCriticalSection(&modified_list.list_lock);
 
     return;
@@ -220,15 +225,47 @@ void instantiateModifiedList() {
 
 
 // Create zeroed list
+// I understand the misnomer of using "freelists"
+// for the zero list structure. For the sake of time
+// I am just using the same freelists attribute I implemented
+// for the freelists. With more time, could just create list
+// structures for each list. That way, each page would also carry
+// much less around
+
+HANDLE pages_on_freelists;
+
 void instantiateZeroList() {
-    zero_list.blink = &zero_list;
-    zero_list.flink = &zero_list;
+    zero_list.freelists = (page_t*)malloc(sizeof(page_t) * NUM_FREELISTS);
+
+    if (zero_list.freelists == NULL) {
+        printf("Couldn't malloc memory for freelists\n");
+        DebugBreak();
+        return;
+    }
+
     zero_list.num_of_pages = 0;
 
-    zero_list.is_freelist = 0;
 
+    // This is used in the zeroing thread, 
+    // therefore instantiating here.
+    pages_on_freelists = CreateEvent(NULL, FALSE, FALSE, NULL);
 
-    InitializeCriticalSection(&zero_list.list_lock);
+    // Initialize each freelist
+
+    for (unsigned i = 0; i < NUM_FREELISTS; i++) {
+
+        InitializeCriticalSection(&zero_list.freelists[i].list_lock);
+
+        EnterCriticalSection(&zero_list.freelists[i].list_lock);
+
+        zero_list.freelists[i].blink = &zero_list.freelists[i];
+        zero_list.freelists[i].flink = &zero_list.freelists[i];
+
+        zero_list.freelists[i].num_of_pages = 0;
+        zero_list.freelists[i].is_zerolist = 1;
+
+        LeaveCriticalSection(&zero_list.freelists[i].list_lock);
+    }
 
 }
 
@@ -256,6 +293,10 @@ page_t* popTailPage(page_t* listhead) {
         InterlockedDecrement(&freelist.num_of_pages);
     }
 
+    if (listhead->is_zerolist == 1) {
+        InterlockedDecrement(&zero_list.num_of_pages);
+    }
+
     return tail;
 
 }
@@ -278,6 +319,10 @@ page_t* popHeadPage(page_t* listhead) {
 
     if (listhead->is_freelist == 1) {
         InterlockedDecrement(&freelist.num_of_pages);
+    }
+
+    if (listhead->is_zerolist == 1) {
+        InterlockedDecrement(&zero_list.num_of_pages);
     }
 
 
@@ -329,6 +374,10 @@ void popFromAnywhere(page_t* listhead, page_t* given_page) {
         if (listhead->is_freelist == 1) {
             InterlockedDecrement(&freelist.num_of_pages);
         }
+
+        if (listhead->is_zerolist == 1) {
+            InterlockedDecrement(&zero_list.num_of_pages);
+        }
     }
 
     //return given_page;
@@ -355,6 +404,10 @@ void addToHead(page_t* listhead, page_t* new_page) {
 
     if (listhead->is_freelist == 1) {
         InterlockedIncrement(&freelist.num_of_pages);
+    }
+
+    if (listhead->is_zerolist == 1) {
+        InterlockedIncrement(&zero_list.num_of_pages);
     }
 
     if (listhead == &standby_list && new_page->pagefile_num == 0) {
@@ -391,6 +444,10 @@ void addToTail(page_t* listhead, page_t* new_page) {
 
     if (listhead->is_freelist == 1) {
         InterlockedIncrement(&freelist.num_of_pages);
+    }
+
+    if (listhead->is_zerolist == 1) {
+        InterlockedIncrement(&zero_list.num_of_pages);
     }
 
     if (listhead == &standby_list && new_page->pagefile_num == 0) {

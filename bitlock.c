@@ -200,9 +200,7 @@ int acquireRandomFreelistLock() {
 
 
 
-                // DM: Fix to <= 0
                 if (freelist.freelists[i].flink == &freelist.freelists[i]) {
-                    //DebugBreak();
                     LeaveCriticalSection(&freelist.freelists[i].list_lock);
                     continue;
                 }
@@ -213,6 +211,81 @@ int acquireRandomFreelistLock() {
                 // lock in the parent once we're done.
 
                 if ((DWORD)freelist.freelists[i].list_lock.OwningThread != GetCurrentThreadId()) {
+                    DebugBreak();
+                }
+
+                return i;
+
+
+            }
+
+        }
+
+    }
+}
+
+
+
+
+
+// Will get some random zerolist lock, for when 
+// we need some arbitrary zeroed out page
+
+
+int acquireRandomZerolistLock() {
+
+    if (zero_list.num_of_pages == 0) {
+        return -1;
+    }
+
+
+
+    while (TRUE) {
+
+        // Return -1 if 0 pages on zerolist
+
+        if (zero_list.num_of_pages == 0) {
+            return -1;
+        }
+
+
+        for (unsigned i = 0; i < NUM_FREELISTS; i++) {
+            
+
+            // If the number of pages on this zerolist is 0,
+            // don't even bother and continue to next zerolist
+
+            if (zero_list.freelists[i].num_of_pages == 0) {
+                continue;
+            }
+
+            // Else, try and get the lock for this zerolist
+
+            if (TryEnterCriticalSection(&zero_list.freelists[i].list_lock) == TRUE) {
+
+                // If you get the lock, make sure there are still
+                // pages on this zerolist, since it could have changed
+                // between the time you last checked and when you got
+                // the lock. If it changed to 0, drop lock and keep trying
+
+                if (zero_list.num_of_pages <= 0) {
+                    LeaveCriticalSection(&zero_list.freelists[i].list_lock);
+                    continue;
+                }
+
+
+
+                if (zero_list.freelists[i].flink == &zero_list.freelists[i]) {
+                    LeaveCriticalSection(&zero_list.freelists[i].list_lock);
+                    continue;
+                }
+
+                // Once we get here, we are guaranteed to have gotten
+                // the lock to this zerolist and that it has at least 
+                // 1 page on it. Return the index so we can drop the
+                // lock in the parent once we're done.
+
+                if ((DWORD)zero_list.freelists[i].list_lock.OwningThread != GetCurrentThreadId()) {
                     DebugBreak();
                 }
 
