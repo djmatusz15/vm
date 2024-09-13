@@ -160,6 +160,7 @@ BOOL tryAcquireLock(volatile LONG* lock) {
 int acquireRandomFreelistLock() {
 
     if (freelist.num_of_pages == 0) {
+        //SetEvent(too_few_pages_on_freelists);
         return -1;
     }
 
@@ -170,6 +171,7 @@ int acquireRandomFreelistLock() {
         // Return -1 if 0 pages on freelist
 
         if (freelist.num_of_pages == 0) {
+            //SetEvent(too_few_pages_on_freelists);
             return -1;
         }
 
@@ -235,6 +237,7 @@ int acquireRandomFreelistLock() {
 int acquireRandomZerolistLock() {
 
     if (zero_list.num_of_pages == 0) {
+        //SetEvent(pages_on_freelists);
         return -1;
     }
 
@@ -245,6 +248,7 @@ int acquireRandomZerolistLock() {
         // Return -1 if 0 pages on zerolist
 
         if (zero_list.num_of_pages == 0) {
+            //SetEvent(pages_on_freelists);
             return -1;
         }
 

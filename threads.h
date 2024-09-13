@@ -22,3 +22,4 @@ BOOL map_batch_to_pagefile(page_t** batched_pages, ULONG64* batched_pfns, int* s
 void unmap_batch (page_t** batched_pages, unsigned int curr_batch_size);
 void write_ptes_to_modified(page_t** batched_pages, unsigned int curr_batch_size);
 void add_pages_to_modified(page_t** batched_pages, unsigned int curr_batch_size);
+//void trim_behind_fault(LPVOID* vas_to_trim_behind, int vas_to_trim_count);

@@ -6,6 +6,14 @@ HANDLE trim_now;
 
 #if SUPPORT_MULTIPLE_FREELISTS
 
+
+// This function instantiates the freelist structures. It
+// also creates the page_t structures and allocates all the
+// physical frame numbers to them. It then adds these pages
+// to the zerolists at the start. 
+
+HANDLE too_few_pages_on_freelists;
+
 void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn) {
 
     freelist.freelists = (page_t*)malloc(sizeof(page_t) * NUM_FREELISTS);
@@ -15,6 +23,16 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
         DebugBreak();
         return;
     }
+
+    // Create event to track the amount of pages
+    // on the freelists. If it hits too low of a
+    // limit, then we call the moving thread to
+    // acquire the standby list lock and move 
+    // pages to the freelists
+
+    too_few_pages_on_freelists = CreateEvent(NULL, FALSE, FALSE, NULL);
+
+
 
     // Initialize each freelist
 
@@ -45,20 +63,42 @@ void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physic
             DebugBreak();
         }
 
-        unsigned int freelist_to_add_frame_to = page_to_pfn(new_page) % NUM_FREELISTS;
-
-        EnterCriticalSection(&freelist.freelists[freelist_to_add_frame_to].list_lock);
-
-        addToHead(&freelist.freelists[freelist_to_add_frame_to], new_page);
-
-        LeaveCriticalSection(&freelist.freelists[freelist_to_add_frame_to].list_lock);
+        unsigned int zerolist_to_add_frame_to = page_to_pfn(new_page) % NUM_FREELISTS;
 
 
+        // Add 9/10 of the pages to the zerolists. Add a 
+        // sixth of pages to the freelists so that we can
+        // actually trigger the too_few_pages event to add
+        // pages back to the freelists
+        if (zerolist_to_add_frame_to % 10 != 0) {
+            EnterCriticalSection(&zero_list.freelists[zerolist_to_add_frame_to].list_lock);
+
+            addToHead(&zero_list.freelists[zerolist_to_add_frame_to], new_page);
+
+            LeaveCriticalSection(&zero_list.freelists[zerolist_to_add_frame_to].list_lock);
+
+        }
+
+        else {
+
+            EnterCriticalSection(&freelist.freelists[zerolist_to_add_frame_to].list_lock);
+
+            addToHead(&freelist.freelists[zerolist_to_add_frame_to], new_page);
+
+            LeaveCriticalSection(&freelist.freelists[zerolist_to_add_frame_to].list_lock);
+
+        }
+
+
+        // Add all the pages to the zerolists
+        // EnterCriticalSection(&zero_list.freelists[zerolist_to_add_frame_to].list_lock);
+
+        // addToHead(&zero_list.freelists[zerolist_to_add_frame_to], new_page);
+
+        // LeaveCriticalSection(&zero_list.freelists[zerolist_to_add_frame_to].list_lock);
+
+        
     } 
-
-    // for (unsigned int i = 0; i < NUM_FREELISTS; i++) {
-    //     printf("Freelist %d count: %d\n", i, freelist.freelists[i].num_of_pages);
-    // }
 
 
 
@@ -129,7 +169,6 @@ void instantiateStandyList () {
 
 HANDLE modified_list_notempty;
 HANDLE pagefile_blocks_available;
-//LPVOID modified_page_va;
 LPVOID* modified_writer_vas;
 
 pagefile_t pf;
@@ -198,26 +237,68 @@ void instantiateModifiedList() {
 
     #endif
 
+    // calloc initializes all values to 0, thus we 
+    // don't have to spend the time looping and doing
+    // it manually
 
-    pf.pagefile_state = malloc(sizeof(UCHAR) * num_pagefile_blocks);
+    pf.pagefile_state = calloc(num_pagefile_blocks, sizeof(UCHAR));
+    if (pf.pagefile_state == NULL) {
+        printf("Could not calloc for pagefile states\n");
+        DebugBreak();
+    }
+
+    // We can give this garbage values, since it will automatically
+    // be overwritten in the mod writer once we find it's free and 
+    // copy the page's contents into it
+
     pf.pagefile_contents = malloc(PAGE_SIZE * num_pagefile_blocks);
+    if (pf.pagefile_contents == NULL) {
+        printf("Could not malloc for pagefile contents\n");
+        DebugBreak();
+    }
+
+
+    pf.free_slots_available = malloc(sizeof(int) * (num_pagefile_blocks-1));
+    if (pf.free_slots_available == NULL) {
+        printf("Could not malloc for pagefile free slots array\n");
+        DebugBreak();
+    }
+
 
     InitializeCriticalSection(&pf.pf_lock);
     EnterCriticalSection(&pf.pf_lock);
 
-    for (unsigned i = 0; i < num_pagefile_blocks; i++) {
-        pf.pagefile_state[i] = 0;
-    }
+    pf.free_pagefile_blocks = 0;
 
-    for (unsigned i = 0; i < num_pagefile_blocks * PAGE_SIZE; i++) {
-        pf.pagefile_contents[i] = '\0';
+    for (int i = 1; i < num_pagefile_blocks; i++) {
+        addFreePagefileSlot(i);
     }
-
-    pf.free_pagefile_blocks = num_pagefile_blocks;
 
     LeaveCriticalSection(&pf.pf_lock);
 
+
+    // InitializeCriticalSection(&pf.pf_lock);
+    // EnterCriticalSection(&pf.pf_lock);
+
+    // for (unsigned i = 0; i < num_pagefile_blocks; i++) {
+    //     pf.pagefile_state[i] = 0;
+    // }
+
+    // for (unsigned i = 0; i < num_pagefile_blocks * PAGE_SIZE; i++) {
+    //     pf.pagefile_contents[i] = '\0';
+    // }
+
+
+    // DM: take out the - 1 if O(1) solution breaks
+    // pf.free_pagefile_blocks = num_pagefile_blocks - 1;
+
+    // LeaveCriticalSection(&pf.pf_lock);
+
+
+
     InitializeCriticalSection(&modified_list.list_lock);
+    // DM: To switch to shared lock,
+    // use InitializeSRWLock();
 
     return;
 }
@@ -418,9 +499,9 @@ void addToHead(page_t* listhead, page_t* new_page) {
         DebugBreak();
     }
 
-    if (listhead == &standby_list && listhead->num_of_pages >= 1) {
-        SetEvent(pages_available);
-    }
+    // if (listhead == &standby_list && listhead->num_of_pages >= 1) {
+    //     SetEvent(pages_available);
+    // }
 
     debug_checks_list_counter(listhead);
 
@@ -468,10 +549,47 @@ void addToTail(page_t* listhead, page_t* new_page) {
 }
 
 
+
+
+
+
+// Will already hold the pagefile critical section
+// Adds the free spot to the head
+void addFreePagefileSlot(int free_spot) {
+    if (free_spot < 0 || free_spot > num_pagefile_blocks) {
+        printf("Given null free spot - addFreePagefileSlot\n");
+        DebugBreak();
+    }
+
+    pf.free_slots_available[pf.free_pagefile_blocks] = free_spot;
+    pf.free_pagefile_blocks++;
+}
+
+
+
+
+// Will already hold the pagefile critical section
+// Takes a free spot from the tail
+int takeFreePagefileSlot() {
+    if (pf.free_pagefile_blocks == 0) {
+        printf("No more pagefile slots available - takeFreePagefileSlot\n");
+        DebugBreak();
+        return -5;
+    }
+
+    pf.free_pagefile_blocks--;
+    int freeslot_to_take = pf.free_slots_available[pf.free_pagefile_blocks];
+
+    return freeslot_to_take;
+}
+
+
+
+
 page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb) {
     if (pgtb == NULL || given_pfn == 0) {
-        DebugBreak();
         printf("Given pagetable is NULL or pfn is 0 (pfn_to_page)\n");
+        DebugBreak();
         return NULL;
     }
 

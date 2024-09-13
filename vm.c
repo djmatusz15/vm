@@ -531,15 +531,15 @@ full_virtual_memory_test (
 
     // srand (time (NULL));
 
+    instantiateZeroList();
     instantiateFreeList(physical_page_numbers, physical_page_count, base_pfn);
     instantiateStandyList();
     instantiateModifiedList();
-    instantiateZeroList();
 
     HANDLE* thread_handles = initialize_threads();
 
 
-    WaitForMultipleObjects(NUM_OF_FAULTING_THREADS, &thread_handles[4], TRUE, INFINITE);
+    WaitForMultipleObjects(NUM_OF_FAULTING_THREADS, &thread_handles[5], TRUE, INFINITE);
 
 
     // SetEvent(global_exit_event);

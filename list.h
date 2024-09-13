@@ -61,12 +61,6 @@ typedef struct page {
 } page_t;
 
 
-// typedef struct pagefile {
-//     PUCHAR pagefile_state;
-//     PUCHAR pagefile_contents;
-//     unsigned free_pagefile_blocks;
-// } pagefile_t;
-
 
 
 void instantiateFreeList(PULONG_PTR physical_frame_numbers, ULONG_PTR num_physical_frames, page_t* base_pfn);
@@ -79,6 +73,8 @@ page_t* popHeadPage(page_t* listhead);
 void popFromAnywhere(page_t* listhead, page_t* given_page);
 void addToHead(page_t* listhead, page_t* given_page);
 void addToTail(page_t* listhead, page_t* new_page);
+void addFreePagefileSlot(int free_spot);
+int takeFreePagefileSlot();
 page_t* pfn_to_page(ULONG64 given_pfn, PAGE_TABLE* pgtb);
 ULONG64 page_to_pfn(page_t* given_page);
 VOID debug_checks_list_counter();

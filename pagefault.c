@@ -3,7 +3,8 @@
 
 // DM: Careful in holding the PTE region lock the whole time
 
-BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins, LPVOID temp_va_for_new_pte) {
+// BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins, LPVOID* temp_vas_for_zeroing_new_pte, LPVOID* batch_for_new_ptes, ULONG64* batched_pfns_for_new_ptes) {
+BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins, LPVOID temp_va_for_zeroing) {
 
     ULONG64 conv_index = va_to_pte_index(arbitrary_va, pgtb);
     ULONG64 pte_region_index_for_lock = conv_index / PTES_PER_REGION;
@@ -53,7 +54,8 @@ BOOL pagefault(PULONG_PTR arbitrary_va, FLUSHER* flusher, PULONG_PTR* batch_vas_
     // HANDLE BRAND NEW PTE
     else if (curr_pte->entire_format == 0) {
 
-        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock, temp_va_for_new_pte);
+        // handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock, temp_vas_for_zeroing_new_pte, batch_for_new_ptes, batched_pfns_for_new_ptes);
+        handled_fault = handle_new_pte(curr_pte, pte_region_index_for_lock, temp_va_for_zeroing);
 
     }
 
@@ -194,6 +196,8 @@ VOID rescuePTE(PTE* curr_pte) {
                 }
 
             }
+
+            // Comment out if it breaks again
             // else {
             //     if (listhead == curr_page) {
             //         break;
@@ -245,9 +249,13 @@ VOID rescuePTE(PTE* curr_pte) {
         EnterCriticalSection(&pf.pf_lock);
 
         pf.pagefile_state[curr_page->pagefile_num] = 0;
+
+        // DM: Add pagefile slot back to free array
+        addFreePagefileSlot(curr_page->pagefile_num);
+
         curr_page->pagefile_num = 0;
 
-        pf.free_pagefile_blocks++;
+        //pf.free_pagefile_blocks++;
 
         LeaveCriticalSection(&pf.pf_lock);
 
@@ -282,6 +290,24 @@ VOID rescuePTE(PTE* curr_pte) {
 // get page from zerolist, freelist (and zero out) 
 // or cannabalize from standby. Repurpose the 
 // page so this PTE is active and can use it
+
+// 09/05/2024: After some analysis, I found 
+// that about 10-15% of my PTEs that I handle 
+// when brand new must grab a non-zeroed page.
+// I figure this is alright, but mapping and
+// unmapping these unzeroed pages is still
+// costing me a ton of time. I will now
+// speculatively read in sequential pages that
+// are in transition format on the modified
+// or standby lists, so that I can try to rescue
+// many pages all at once, try and grab a batch
+// of zeroed pages and, if I can't, then zero
+// them all in one call, instead of rescuing pages
+// one at a time and zeroing them as such. My 
+// prediction is that I can secure quite a few 
+// rescues and, since my sequential accesses are 
+// pretty frequent, I will be able to avoid the
+// faults on those addresses, saving me good time.
 
 BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID temp_va_for_new_pte) {
 
@@ -323,6 +349,7 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID tem
     }
 
     else if (zerolist_lock == -1) {
+        // SetEvent(pages_on_freelists);
         freelist_lock = acquireRandomFreelistLock();
 
         if (freelist_lock != -1) {
@@ -344,12 +371,22 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID tem
                 DebugBreak();
             }
 
+
+            // Checks if the freelists are running low on pages.
+            // If so, trigger thread to move pages to freelists
+            // from standby
+            if (freelist.num_of_pages <= (.20 * NUMBER_OF_PHYSICAL_PAGES)) {
+                SetEvent(too_few_pages_on_freelists);
+            }
+
+
             LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
 
         }
     }
 
     if (freelist_lock == -1) {
+        SetEvent(too_few_pages_on_freelists);
         on_standby = TRUE;
 
         EnterCriticalSection(&standby_list.list_lock);
@@ -366,7 +403,7 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID tem
             // When making faulting threads that are waiting, 
             // we want to trigger an event, and release PTE lock
 
-            //SetEvent(trim_now);
+            SetEvent(trim_now);
             return FALSE;
         }
 
@@ -433,6 +470,246 @@ BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID tem
 
     return TRUE;
 }
+
+
+
+
+
+// BOOL handle_new_pte(PTE* curr_pte, ULONG64 pte_region_index_for_lock, LPVOID* temp_vas_for_zeroing_new_pte, LPVOID* batch_for_new_ptes, ULONG64* batched_pfns_for_new_ptes) {
+
+//     PTE_LOCK* pte_lock;
+//     ULONG64 pte_pfn;
+//     ULONG64 popped_pfn;
+//     page_t* curr_page;
+
+//     int freelist_lock;
+//     int zerolist_lock;
+//     BOOL on_standby = FALSE;
+//     PULONG_PTR arbitrary_va = pte_to_va(curr_pte, pgtb);
+//     ULONG64 base_pte_index = va_to_pte_index(arbitrary_va, pgtb);
+
+
+//     // Keeps track to see if we need to zero
+//     // the batch of pages we found
+//     BOOL needs_zeroing = FALSE;
+
+
+//     int brand_new_ptes_found = 0;
+
+//     for (unsigned i = 0; i < (CONSECUTIVE_ACCESSES / 8); i++) {
+
+//         if (base_pte_index + i >= pgtb->num_ptes) {
+//             break;
+//         }
+
+//         PTE* new_pte_observed = &pgtb->pte_array[base_pte_index + i];
+//         ULONG64 region_to_lock = (base_pte_index + i) / (PTES_PER_REGION);
+//         if (region_to_lock != pte_region_index_for_lock) {
+//             break;
+//         }
+
+//         // If this PTE has never been touched, 
+//         // add it to batch to give pages to
+//         if (new_pte_observed->entire_format == 0) {
+
+
+//             // DM: This isn't mapped yet, since its not
+//             // been mapped to a VA! Its brand new.
+//             PULONG_PTR brand_new_pte_va = pte_to_va(new_pte_observed, pgtb);
+//             batch_for_new_ptes[brand_new_ptes_found] = brand_new_pte_va;
+//             brand_new_ptes_found++;
+
+//         }
+
+//     }
+
+
+//     // DM: Get pages for every new PTE we found near us
+//     for (unsigned i = 0; i < brand_new_ptes_found; i++) {
+
+//         zerolist_lock = acquireRandomZerolistLock();   
+
+//         if (zerolist_lock != -1) {
+
+//             if ((DWORD)zero_list.freelists[zerolist_lock].list_lock.OwningThread != GetCurrentThreadId()) {
+//                 printf("Mismatching zerolist owning threads\n");
+//                 DebugBreak();
+//             }
+
+//             if (zero_list.freelists[zerolist_lock].num_of_pages <= 0) {
+//                 printf("Still got empty zerolist\n");
+//                 DebugBreak();
+//             }
+
+//             // Popping Tail so to not potentially pop listhead accidentally
+//             curr_page = popTailPage(&zero_list.freelists[zerolist_lock]);
+
+//             if (curr_page == NULL || curr_page == &zero_list.freelists[zerolist_lock] || curr_page->num_of_pages != 0) {
+//                 printf("Null page from zerolist\n");
+//                 DebugBreak();
+//             }
+
+//             LeaveCriticalSection(&zero_list.freelists[zerolist_lock].list_lock);
+
+//         }
+
+//         else if (zerolist_lock == -1) {
+//             // SetEvent(pages_on_freelists);
+//             freelist_lock = acquireRandomFreelistLock();
+
+//             if (freelist_lock != -1) {
+
+//                 if ((DWORD)freelist.freelists[freelist_lock].list_lock.OwningThread != GetCurrentThreadId()) {
+//                     printf("Mismatching freelist owning threads\n");
+//                     DebugBreak();
+//                 }
+
+//                 if (freelist.freelists[freelist_lock].num_of_pages <= 0) {
+//                     printf("Still got empty freelist\n");
+//                     DebugBreak();
+//                 }
+
+//                 curr_page = popTailPage(&freelist.freelists[freelist_lock]);
+
+//                 if (curr_page == NULL || curr_page == &freelist.freelists[freelist_lock] || curr_page->num_of_pages != 0) {
+//                     printf("Null page from freelist\n");
+//                     DebugBreak();
+//                 }
+
+
+//                 // Checks if the freelists are running low on pages.
+//                 // If so, trigger thread to move pages to freelists
+//                 // from standby
+//                 if (freelist.num_of_pages <= (.20 * NUMBER_OF_PHYSICAL_PAGES)) {
+//                     SetEvent(too_few_pages_on_freelists);
+//                 }
+
+
+//                 LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
+
+//             }
+//         }
+
+//         if (freelist_lock == -1) {
+//             SetEvent(too_few_pages_on_freelists);
+//             on_standby = TRUE;
+
+//             EnterCriticalSection(&standby_list.list_lock);
+
+//             curr_page = recycleOldestPage(pte_region_index_for_lock);
+
+//             if (curr_page == NULL) {
+//                 //printf("Couldn't get oldest page(handle_new_pte)\n");
+
+//                 LeaveCriticalSection(&standby_list.list_lock);
+
+
+//                 // No pages left, maybe trigger the trim event now.
+//                 // When making faulting threads that are waiting, 
+//                 // we want to trigger an event, and release PTE lock
+
+//                 SetEvent(trim_now);
+//                 return FALSE;
+//             }
+
+//             LeaveCriticalSection(&standby_list.list_lock);
+            
+//         }
+
+
+//         // if (curr_page->pte != NULL) {
+
+//             if (zerolist_lock == -1) {
+
+//                 // Here, just note that there is a page 
+//                 // that needs zeroing. Hence, if there is
+//                 // even one page we need to zero, we 
+//                 // do the mapping.
+
+//                 needs_zeroing = TRUE;
+
+//             }
+//         // }
+        
+
+//         batched_pfns_for_new_ptes[i] = page_to_pfn(curr_page);
+
+//     }
+
+
+//     // If this is TRUE, zero the whole batch.
+//     // PROS: We can now batch large amounts of
+//     // brand new PTEs to map all at once, so
+//     // that we don't need to map them one at a
+//     // time everytime. Also, if we happen to 
+//     // get a page that needs zeroing, we can 
+//     // zero other pages that may needs zeroing 
+//     // as well, all in one batch.
+//     // CONS: Let's say we get a batch of 32 pages,
+//     // where only one of them needs to be zeroed. 
+//     // Then, this method is less efficient since
+//     // we would be making a zero-mapping for 31
+//     // pages that don't need to be zeroed, since
+//     // they've already been zeroed. Considering we
+//     // get unzeroed pages between 10-15% of the time,
+//     // and making the lazy assumption that this rate
+//     // is consistent throughout the duration of the 
+//     // program, we can expect 3-4 unzeroed pages per 
+//     // batch of 32 pages. Thus, pretty much every batch
+//     // we process we will need to zero, even if they
+//     // don't need zeroing.
+//     if (needs_zeroing == TRUE) {
+        
+//         if (MapUserPhysicalPagesScatter(temp_vas_for_zeroing_new_pte, brand_new_ptes_found, batched_pfns_for_new_ptes) == FALSE) {
+//             printf("Couldn't map pages temporarily to be zeroed - handle_new_pte\n");
+//             DebugBreak();
+//         }
+
+//         for (unsigned i = 0; i < brand_new_ptes_found; i++) {
+//             memset(temp_vas_for_zeroing_new_pte[i], 0, PAGE_SIZE);
+//         }
+
+//         if (MapUserPhysicalPagesScatter(temp_vas_for_zeroing_new_pte, brand_new_ptes_found, NULL) == FALSE) {
+//             printf("Couldn't unmap pages temporarily to be zeroed - handle_new_pte\n");
+//             DebugBreak();
+//         }
+
+//     }
+    
+//     if (MapUserPhysicalPagesScatter(batch_for_new_ptes, brand_new_ptes_found, batched_pfns_for_new_ptes) == FALSE) {
+//         printf("Could not map brand new PTEs properly\n");
+//         DebugBreak();
+//     }
+
+//     // DM: MUST KEEP TRACK OF THIS!
+//     // recycleOldestPage no longer does this
+
+//     // DM: Make sure to unlock all the 
+//     // PTE regions here
+
+//     for (unsigned i = 0; i < brand_new_ptes_found; i++) {
+//         ULONG64 curr_pte_index = va_to_pte_index(batch_for_new_ptes[i], pgtb);
+//         PTE* curr_pte = &pgtb->pte_array[curr_pte_index];
+//         page_t* curr_page = pfn_to_page(batched_pfns_for_new_ptes[i], pgtb);
+
+//         curr_page->pagefile_num = 0;
+
+//         PTE local_contents;
+//         local_contents.entire_format = 0;
+
+//         local_contents.memory_format.age = 0;
+//         local_contents.memory_format.valid = 1;
+//         local_contents.memory_format.frame_number = batched_pfns_for_new_ptes[i];
+//         WriteToPTE(curr_pte, local_contents);
+
+//         curr_page->pte = curr_pte;
+
+//         new_ptes++;
+
+//     }
+
+//     return TRUE;
+// }
 
 #else
 
@@ -805,6 +1082,10 @@ page_t* recycleOldestPage(ULONG64 pte_region_index_for_lock) {
 }
 
 
+
+// Made this into its own thread. #if 0
+
+#if 0
 void move_pages_from_standby_to_freelist(ULONG64 pte_region_index_for_lock) {
 
 
@@ -814,12 +1095,12 @@ void move_pages_from_standby_to_freelist(ULONG64 pte_region_index_for_lock) {
     unsigned int num_pages_on_standby = standby_list.num_of_pages;
 
     // If num_pages_on_standby is greater than a certain threshold,
-    // Move a third of the pages on standby to freelist
+    // Move a quarter of the pages on standby to freelist
 
-    if (num_pages_on_standby >= (NUMBER_OF_PHYSICAL_PAGES * .25)) {
+    if (num_pages_on_standby >= (NUMBER_OF_PHYSICAL_PAGES * .0625)) {       // .25
 
 
-        unsigned int num_to_move_to_freelist = num_pages_on_standby / 128;
+        unsigned int num_to_move_to_freelist = num_pages_on_standby / 4;      // 128
 
     
         for (unsigned i = 0; i < num_to_move_to_freelist; i++) {
@@ -869,10 +1150,6 @@ void move_pages_from_standby_to_freelist(ULONG64 pte_region_index_for_lock) {
             curr_page->pagefile_num = 0;
 
             UnlockPagetable(curr_pte_index_region);
-
-
-            // DM: Zero out the page to remove any sensitive data
-            // memset(page_to_pfn(curr_page), 0, PAGE_SIZE);
 
 
 
@@ -967,6 +1244,8 @@ void move_pages_from_standby_to_freelist(ULONG64 pte_region_index_for_lock) {
 
 }
 
+#endif
+
 
 
 BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUSHER* flusher, PULONG_PTR* batch_vas_for_readins, ULONG64* batch_pfns_for_readins) {
@@ -978,11 +1257,10 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
     ULONG64 base_pte_index = va_to_pte_index(base_va, pgtb);
 
     int count_batch_vas = 0;
+    int zerolist_lock;
 
     for (unsigned i = 0; i < (CONSECUTIVE_ACCESSES/ 8); i++) {
 
-
-        // int zerolist_lock = -1;
 
 
         PTE* attempt_pte = &pgtb->pte_array[base_pte_index + i];
@@ -1016,29 +1294,52 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
                 DebugBreak();
             }
 
+
+            // Checks if the freelists are running low on pages.
+            // If so, trigger thread to move pages to freelists
+            // from standby
+            if (freelist.num_of_pages <= (.20 * NUMBER_OF_PHYSICAL_PAGES)) {
+                SetEvent(too_few_pages_on_freelists);
+            }
+
             LeaveCriticalSection(&freelist.freelists[freelist_lock].list_lock);
 
         }
 
 
-        // else if (freelist_lock == -1) {
-        //     zerolist_lock = acquireRandomZerolistLock();
-
-        //     if (zerolist_lock != -1) {
-
-        //         repurposed_page = popTailPage(&zero_list.freelists[zerolist_lock]);
-
-        //         if (repurposed_page->num_of_pages != 0) {
-        //             printf("Accidentally popped listhead somehow - zerolist\n");
-        //             DebugBreak();
-        //         }
-
-        //         LeaveCriticalSection(&zero_list.freelists[zerolist_lock]);
-        //     }
-
-        // }
-
         else if (freelist_lock == -1) {
+            SetEvent(too_few_pages_on_freelists);
+            zerolist_lock = acquireRandomZerolistLock();
+
+            if (zerolist_lock != -1) {
+
+                if ((DWORD)zero_list.freelists[zerolist_lock].list_lock.OwningThread != GetCurrentThreadId()) {
+                    printf("Mismatching zerolist owning threads\n");
+                    DebugBreak();
+                }
+
+                if (zero_list.freelists[zerolist_lock].num_of_pages <= 0) {
+                    printf("Still got empty zerolist\n");
+                    DebugBreak();
+                }
+
+                repurposed_page = popTailPage(&zero_list.freelists[zerolist_lock]);
+
+                if (repurposed_page == NULL || repurposed_page == &zero_list.freelists[zerolist_lock] || repurposed_page->num_of_pages != 0) {
+                    printf("Null page from zerolist\n");
+                    DebugBreak();
+                }
+
+
+                LeaveCriticalSection(&zero_list.freelists[zerolist_lock].list_lock);
+
+            }
+
+        }
+
+
+
+        if (zerolist_lock == -1) {
             on_standby = TRUE;
 
 
@@ -1053,7 +1354,7 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
                 // When making faulting threads that are waiting, 
                 // we want to trigger an event, and release PTE lock
                 
-                //SetEvent(trim_now);
+                SetEvent(trim_now);
                 
                 UnlockPagetable(attempt_pte_region);
 
@@ -1064,7 +1365,7 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
             // reduce standby list contention
 
             #if MOVE_PAGES_FROM_STANDBY_TO_FREELIST
-            move_pages_from_standby_to_freelist(pte_region_index_for_lock);
+            //move_pages_from_standby_to_freelist(pte_region_index_for_lock);
             #endif
 
 
@@ -1152,7 +1453,10 @@ BOOL read_batch_from_disk(PTE* curr_pte, ULONG64 pte_region_index_for_lock, FLUS
         EnterCriticalSection(&pf.pf_lock);
 
         pf.pagefile_state[attempt_pte_pagefile_slot] = 0;
-        pf.free_pagefile_blocks++;
+
+        // DM: Add free spot to array
+        addFreePagefileSlot(attempt_pte_pagefile_slot);
+        //pf.free_pagefile_blocks++;
 
         LeaveCriticalSection(&pf.pf_lock);
 
